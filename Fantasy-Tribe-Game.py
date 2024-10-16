@@ -38,8 +38,16 @@ import textwrap
 import gradio as gr
 import os
 
-anthropicKey = os.environ.get("ANTHROPIC_API_KEY")
-openAIKey = os.environ.get("OPENAI_API_KEY")
+try:
+    anthropicKey = os.environ.get("ANTHROPIC_API_KEY")
+except:
+    anthropicKey = ""
+try:
+    openAIKey = os.environ.get("OPENAI_API_KEY")
+except:
+    openAIKey = ""
+
+openAIKey = "sk-777"
 openAImodel = "gpt-4o-mini" #"gpt-4o
 local_url = "http://127.0.0.1:1234/v1"
 
@@ -52,7 +60,7 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.OPENAI #choose your LLM provider here
+    LLM_PROVIDER: LLMProvider = LLMProvider.LOCAL #choose your LLM provider here
 
 
 class EnumEncoder(json.JSONEncoder):

@@ -36,9 +36,10 @@ import anthropic
 from enum import Enum
 import textwrap
 import gradio as gr
+import os
 
-anthropicKey = ""
-openAIKey = ""
+anthropicKey = os.environ.get("ANTHROPIC_API_KEY")
+openAIKey = os.environ.get("OPENAI_API_KEY")
 openAImodel = "gpt-4o-mini" #"gpt-4o
 local_url = "http://127.0.0.1:1234/v1"
 

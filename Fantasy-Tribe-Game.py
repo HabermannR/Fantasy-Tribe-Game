@@ -27,16 +27,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-import random
 import json
-from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
-from pydantic import BaseModel, Field
-from openai import OpenAI
-import anthropic
-from enum import Enum
-import textwrap
-import gradio as gr
 import os
+import random
+import textwrap
+from enum import Enum
+from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
+
+import anthropic
+import gradio as gr
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
 try:
     anthropicKey = os.environ.get("ANTHROPIC_API_KEY")
@@ -47,12 +48,12 @@ try:
 except:
     openAIKey = ""
 
-openAIKey = "sk-777"
-openAImodel = "gpt-4o-mini" #"gpt-4o
+openAImodel = "gpt-4o-mini"  # "gpt-4o
 local_url = "http://127.0.0.1:1234/v1"
 
-
 T = TypeVar('T', bound=BaseModel)
+
+
 class LLMProvider(Enum):
     LOCAL = "local"
     OPENAI = "openai"
@@ -60,7 +61,7 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.LOCAL #choose your LLM provider here
+    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC  # choose your LLM provider here
 
 
 class EnumEncoder(json.JSONEncoder):
@@ -125,10 +126,11 @@ class AnthropicStrategy(LLMStrategy):
 
 class OpenAIStrategy(LLMStrategy):
     def __init__(self):
-        self.client = OpenAI(api_key=openAIKey )
+        self.client = OpenAI(api_key=openAIKey)
         self.model = openAImodel
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> Any | None:
+    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T],
+                      max_tokens: int = 1500) -> Any | None:
         try:
             completion = self.client.beta.chat.completions.parse(
                 model=self.model,
@@ -178,6 +180,7 @@ def get_llm_strategy(provider: LLMProvider) -> LLMStrategy:
         return AnthropicStrategy()
     else:
         return LocalModelStrategy()
+
 
 config = Config()
 # Use the function to initialize the LLMContext
@@ -301,7 +304,7 @@ Tribe Tier: {self.tier}"""
         recent_events = self.history[-num_events:]
         if full_output:
             return "\n\n".join([f"- {event['description']} (Outcome: {OutcomeType(event['outcome']).name})"
-                          for event in recent_events])
+                                for event in recent_events])
         else:
             # Reverse the events and include turn numbers
             recent_events.reverse()
@@ -346,9 +349,10 @@ history: List[dict] = []
 
 
 def generate_tribe_choices():
-    race_array = ["Lizardmen", "Giants", "Vampires", "Humans", "Orcs", "Dragons", "Necromancers", "Wizards", "Halflings"]
+    race_array = ["Lizardmen", "Giants", "Vampires", "Humans", "Orcs", "Dragons", "Necromancers", "Wizards",
+                  "Halflings"]
     attribute_array = ["magic fire capabilities", "water magic", "strong fighting capabilities",
-                      "health regeneration", "immortality", "raise the undead capabilities", "telepathic abilities"]
+                       "health regeneration", "immortality", "raise the undead capabilities", "telepathic abilities"]
 
     race = [f"{random.choice(race_array)} with {random.choice(attribute_array)}" for _ in range(3)]
 
@@ -640,8 +644,8 @@ Be creative but consistent with the current game state, active quests, and the c
 
 def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
     roll = random.random()
-    #roll = 0.0
-    #roll = 1.0
+    # roll = 0.0
+    # roll = 1.0
     if roll < probability:
         return OutcomeType.POSITIVE, roll
     elif roll < (probability + (1 - probability) / 2):
@@ -692,7 +696,7 @@ def create_gui():
 
             # Update all necessary GUI elements
             tribe_overview = current_game_state.to_context_string()
-            recent_history = current_game_state.get_recent_history(num_events=5, full_output=False)
+            recent_history = current_game_state.get_recent_history(num_events=1000, full_output=False)
             current_situation = current_game_state.quest_description
 
             action_updates = []
@@ -735,7 +739,7 @@ def create_gui():
             )
 
         tribe_overview = current_game_state.to_context_string()
-        recent_history = current_game_state.get_recent_history(num_events=5, full_output=False)
+        recent_history = current_game_state.get_recent_history(num_events=1000, full_output=False)
         current_situation = current_game_state.quest_description
 
         if current_action_choices is not None:
@@ -760,7 +764,6 @@ def create_gui():
             gr.update(visible=True, value=current_situation),
             *updates
         )
-
 
     def perform_action(action_index):
         global current_game_state, current_action_choices
@@ -830,9 +833,9 @@ def create_gui():
 
                 return (
                     gr.update(visible=False),  # Hide tribe selection group
-                    tribe_overview,            # Now includes visibility in update
-                    recent_history,            # Now includes visibility in update
-                    current_situation,         # Now includes visibility in update
+                    tribe_overview,  # Now includes visibility in update
+                    recent_history,  # Now includes visibility in update
+                    current_situation,  # Now includes visibility in update
                     *action_updates
                 )
             else:

@@ -253,6 +253,7 @@ class GameState(GameStateBase):
     last_action_sets: List[List[str]] = Field(default_factory=list)
     last_outcome: Optional[OutcomeType] = None
     current_quest: Optional[Quest] = None
+    turn: int = 1
 
     class Config:
         arbitrary_types_allowed = True
@@ -264,7 +265,8 @@ class GameState(GameStateBase):
         self.history.append({
             "event_type": event_type,
             "description": description,
-            "outcome": outcome.value
+            "outcome": outcome.value,
+            "turn": self.turn
         })
 
     def add_action_set(self, actions: List[str]):
@@ -289,11 +291,16 @@ Tribe Tier: {self.tier}"""
     def get_recent_history(self, num_events: int = 5, full_output: bool = True) -> str:
         recent_events = self.history[-num_events:]
         if full_output:
-            return "\n".join([f"- {event['description']} (Outcome: {OutcomeType(event['outcome']).name})"
+            return "\n\n".join([f"- {event['description']} (Outcome: {OutcomeType(event['outcome']).name})"
                           for event in recent_events])
         else:
-            return "\n".join([f"- {event['description']})"
-                              for event in recent_events])
+            # Reverse the events and include turn numbers
+            recent_events.reverse()
+            formatted_events = []
+            for event in recent_events:
+                turn_header = f"=== Turn {event['turn']} ==="
+                formatted_events.extend([turn_header, event['description']])
+            return "\n\n".join(formatted_events)
 
     @classmethod
     def initialize(cls, tribe_name: str, tribe_description: str, Leader: Character) -> 'GameState':
@@ -314,6 +321,7 @@ Tribe Tier: {self.tier}"""
         for field in GameStateBase.model_fields:
             setattr(self, field, getattr(new_state, field))
         self.add_event("Action", new_state.event_result, outcome)
+        self.turn += 1
         # Update quest progress if there's a current quest
         if self.current_quest:
             if outcome == OutcomeType.POSITIVE:
@@ -572,9 +580,9 @@ def generate_new_game_state(game_state: GameState, chosen_action: ActionChoice,
     recent_history = game_state.get_recent_history(num_events=5)
     current_quest = game_state.current_quest
     if current_quest:
-        quest_update = "6. Update the quest description in quest_description"
+        quest_update = "5. Update the quest description in quest_description"
     else:
-        quest_update = "6. Update the current situation in quest_description"
+        quest_update = "5. Update the current situation in quest_description"
     messages = [
         {
             "role": "system",
@@ -597,7 +605,8 @@ The outcome of this action was {outcome.name}.
 
 Please provide an updated game state, including:
 1. Any changes to the tribe's name, description, and its leaders. Alliances, Royal marriages, won or lost wars and so on do change the tribe's name, the leader title, or even the leaders name!
-You can also add new leaders, for example heros,generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
+But do not change the tribe's name every turn, only when important event have happened.
+You can also add new leaders, for example heroes, generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
 2. Updated gold values. Tier 1 should be between 0 and 200 gold, Tier 2 between 100 and 1000, Tier 3 between 1000 and 10000, and in Tier 4 gold should be over 10000.
 3. Any new allies or enemies
 4. Changes to territory size, power level and the current tier. 
@@ -605,8 +614,10 @@ You can also add new leaders, for example heros,generals, mages, shamans, and so
     Tier 2 is regional influence and early empire-building, power level 11-30, power level may rise 2-5 points
     Tier 3 is nation-building and complex diplomacy, power level 31-75, power level may rise 2-10 points
     Tier 4 is world-shaping decisions and legendary quests, power level > 75, power level may rise 10+ points
-5. A description of what happened and its outcome (event_result)
 {quest_update}
+At last, add a description of what happened and its outcome in your role as game master in event_result.
+Do not talk about Power level and Tier in event_result, instead focus on telling the story of the event.
+
 Be creative but consistent with the current game state, active quests, and the chosen action.
 """
         }
@@ -812,7 +823,7 @@ def create_gui():
                     *[gr.update(visible=False)] * 6)
 
     # Update the GUI layout
-    with gr.Blocks() as app:
+    with gr.Blocks(title="Fantasy Tribe Game") as app:
         gr.Markdown("# Fantasy Tribe Game")
         with gr.Group() as tribe_selection_group:
             start_button = gr.Button("Generate Tribe Choices")

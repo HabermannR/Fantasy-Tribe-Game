@@ -93,7 +93,8 @@ class AnthropicStrategy(LLMStrategy):
             api_key=anthropicKey)
         self.model = "claude-3-5-sonnet-20240620"
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> T:
+    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) \
+            -> Type[T] | None:
         try:
             tool_schema = create_json_schema(response_model)
             response = self.client.messages.create(
@@ -119,7 +120,7 @@ class OpenAIStrategy(LLMStrategy):
         self.client = OpenAI(api_key=openAIKey )
         self.model = openAImodel
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> T:
+    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> Any | None:
         try:
             completion = self.client.beta.chat.completions.parse(
                 model=self.model,
@@ -140,7 +141,7 @@ class LocalModelStrategy(LLMStrategy):
         )
         self.model = "local-model"
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> T:
+    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> None:
         try:
             completion = self.client.chat.completions.create(
                 model=self.model,
@@ -303,11 +304,11 @@ Tribe Tier: {self.tier}"""
             return "\n\n".join(formatted_events)
 
     @classmethod
-    def initialize(cls, tribe_name: str, tribe_description: str, Leader: Character) -> 'GameState':
+    def initialize(cls, tribe_name: str, tribe_description: str, leader: Character) -> 'GameState':
         return cls(
             tribe_name=tribe_name,
             tribe_description=tribe_description,
-            leaders=[Leader, ],
+            leaders=[leader, ],
             gold=100,
             allies=[],
             enemies=[],
@@ -332,16 +333,16 @@ Tribe Tier: {self.tier}"""
                     self.current_quest = None
 
 
-current_game_state: GameState = None
-history: List[str] = []
+current_game_state: Optional[GameState] = None
+history: List[dict] = []
 
 
 def generate_tribe_choices():
-    racearray = ["Lizardmen", "Giants", "Vampires", "Humans", "Orcs", "Dragons", "Necromancers", "Wizards", "Halflings"]
-    attributearray = ["magic fire capabilities", "water magic", "strong fighting capabilities",
+    race_array = ["Lizardmen", "Giants", "Vampires", "Humans", "Orcs", "Dragons", "Necromancers", "Wizards", "Halflings"]
+    attribute_array = ["magic fire capabilities", "water magic", "strong fighting capabilities",
                       "health regeneration", "immortality", "raise the undead capabilities", "telepathic abilities"]
 
-    race = [f"{random.choice(racearray)} with {random.choice(attributearray)}" for _ in range(3)]
+    race = [f"{random.choice(race_array)} with {random.choice(attribute_array)}" for _ in range(3)]
 
     messages = [
         {
@@ -368,7 +369,7 @@ Give me a description of each tribe, without the tribe name."""
     return choices
 
 
-def getLeader(chosen_tribe):
+def get_leader(chosen_tribe):
     messages = [
         {
             "role": "system",
@@ -380,16 +381,17 @@ def getLeader(chosen_tribe):
         }
     ]
 
-    Leader = make_api_call(messages, Character)
+    leader = make_api_call(messages, Character)
 
-    if Leader:
-        print(textwrap.fill(f"\nLeader: {Leader}", width=80, initial_indent="   ",
+    if leader:
+        print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
                             subsequent_indent="   "))
 
-    return Leader
+    return leader
 
 
 def get_tier_specific_prompt(tier):
+    tier_specific_prompt = ""
     if tier == 1:
         tier_specific_prompt = """
 Focus on local establishment and survival. Actions should involve:
@@ -640,18 +642,18 @@ def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
         return OutcomeType.NEGATIVE, roll
 
 
-def decide_event_type(game_state: GameState) -> str:
+def decide_event_type() -> str:
     return random.choices(["single_event", "new_quest"], weights=[0.7, 0.3], k=1)[0]
 
 
 def save_game(game_state: GameState, filename: str):
     with open(filename, 'w') as f:
-        json.dump(game_state.model_dump(), f, cls=EnumEncoder)
+        f.write(json.dumps(game_state.model_dump(), cls=EnumEncoder))
 
 
 def save_all_game_states(all_game_states: list, filename: str):
     with open(filename, 'w') as f:
-        json.dump(all_game_states, f, cls=EnumEncoder)
+        f.write(json.dumps(all_game_states, cls=EnumEncoder))
 
 
 def load_game(filename: str) -> GameState:
@@ -728,7 +730,10 @@ def create_gui():
         recent_history = current_game_state.get_recent_history(num_events=5, full_output=False)
         current_situation = current_game_state.quest_description
 
-        choices = current_action_choices.choices if current_action_choices else []
+        if current_action_choices is not None:
+            choices = current_action_choices.choices
+        else:
+            choices = []
 
         updates = []
         for i in range(3):
@@ -772,7 +777,7 @@ def create_gui():
             # Continue the current quest
             current_action_choices = generate_next_quest_part(current_game_state)
         else:
-            event_type = decide_event_type(current_game_state)
+            event_type = decide_event_type()
 
             if event_type == "new_quest":
                 current_action_choices = generate_new_quest(current_game_state)
@@ -804,8 +809,8 @@ def create_gui():
             chosen_tribe = next(
                 (tribe for index, tribe in enumerate(current_tribe_choices.choices, 1) if index == choice), None)
             if chosen_tribe:
-                Leader = getLeader(chosen_tribe)
-                current_game_state = GameState.initialize(chosen_tribe.tribe, chosen_tribe.description, Leader)
+                leader = get_leader(chosen_tribe)
+                current_game_state = GameState.initialize(chosen_tribe.tribe, chosen_tribe.description, leader)
                 current_action_choices = generate_next_choices(current_game_state)
                 current_game_state.current_action_choices = current_action_choices
 

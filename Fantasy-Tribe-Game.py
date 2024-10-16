@@ -52,7 +52,7 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC #choose your LLM provider here
+    LLM_PROVIDER: LLMProvider = LLMProvider.OPENAI #choose your LLM provider here
 
 
 class EnumEncoder(json.JSONEncoder):
@@ -699,27 +699,33 @@ def create_gui():
 
             return (
                 "Game loaded successfully!",
-                tribe_overview,
-                recent_history,
-                current_situation,
-                *action_updates,
-                gr.update(visible=False)  # Hide tribe selection group
+                gr.update(visible=False),  # Hide tribe selection group
+                gr.update(visible=True, value=tribe_overview),  # Show and update tribe overview
+                gr.update(visible=True, value=recent_history),  # Show and update recent history
+                gr.update(visible=True, value=current_situation),  # Show and update current situation
+                *action_updates
             )
         except FileNotFoundError:
             return (
                 "No saved game found.",
-                "", "", "",
-                *[gr.update(visible=False)] * 6,
-                gr.update(visible=True)  # Show tribe selection group
+                gr.update(visible=True),  # Show tribe selection group
+                gr.update(visible=False),  # Keep tribe overview hidden
+                gr.update(visible=False),  # Keep recent history hidden
+                gr.update(visible=False),  # Keep current situation hidden
+                *[gr.update(visible=False)] * 6
             )
 
     def update_game_display():
         if not current_game_state:
-            return ("No active game", "No history", "No current situation", *[gr.update(visible=False)] * 6)
+            return (
+                gr.update(visible=False, value="No active game"),
+                gr.update(visible=False, value="No history"),
+                gr.update(visible=False, value="No current situation"),
+                *[gr.update(visible=False)] * 6
+            )
 
         tribe_overview = current_game_state.to_context_string()
         recent_history = current_game_state.get_recent_history(num_events=5, full_output=False)
-
         current_situation = current_game_state.quest_description
 
         choices = current_action_choices.choices if current_action_choices else []
@@ -735,7 +741,13 @@ def create_gui():
             else:
                 updates.extend([gr.update(visible=False), gr.update(visible=False)])
 
-        return (tribe_overview, recent_history, current_situation, *updates)
+        return (
+            gr.update(visible=True, value=tribe_overview),
+            gr.update(visible=True, value=recent_history),
+            gr.update(visible=True, value=current_situation),
+            *updates
+        )
+
 
     def perform_action(action_index):
         global current_game_state, current_action_choices
@@ -794,37 +806,43 @@ def create_gui():
             if chosen_tribe:
                 Leader = getLeader(chosen_tribe)
                 current_game_state = GameState.initialize(chosen_tribe.tribe, chosen_tribe.description, Leader)
-                #result = f"You have chosen to lead the {chosen_tribe.tribe}!\n\n{chosen_tribe.description}"
-
-                # Generate initial action choices
                 current_action_choices = generate_next_choices(current_game_state)
                 current_game_state.current_action_choices = current_action_choices
 
                 history.append(current_game_state.model_dump())
                 save_all_game_states(history, "History.json")
 
-                # Unpack the return values from update_game_display correctly
+                # Unpack the return values from update_game_display
                 tribe_overview, recent_history, current_situation, *action_updates = update_game_display()
 
-                return (gr.update(visible=False),  # tribe_choices
-                        gr.update(visible=False),  # tribe_selection
-                        gr.update(visible=False),  # select_tribe_button
-                        tribe_overview,
-                        recent_history,
-                        current_situation,
-                        *action_updates)
+                return (
+                    gr.update(visible=False),  # Hide tribe selection group
+                    tribe_overview,            # Now includes visibility in update
+                    recent_history,            # Now includes visibility in update
+                    current_situation,         # Now includes visibility in update
+                    *action_updates
+                )
             else:
-                return (gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
-                        "Invalid choice. Please select a number between 1 and 3.", "", "",
-                        *[gr.update(visible=False)] * 6)
+                return (
+                    gr.update(visible=True),
+                    gr.update(visible=False, value="Invalid choice. Please select a number between 1 and 3."),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    *[gr.update(visible=False)] * 6
+                )
         else:
-            return (gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
-                    "Please generate tribe choices first.", "", "",
-                    *[gr.update(visible=False)] * 6)
+            return (
+                gr.update(visible=True),
+                gr.update(visible=False, value="Please generate tribe choices first."),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                *[gr.update(visible=False)] * 6
+            )
 
-    # Update the GUI layout
     with gr.Blocks(title="Fantasy Tribe Game") as app:
         gr.Markdown("# Fantasy Tribe Game")
+
+        # Create tribe selection group
         with gr.Group() as tribe_selection_group:
             start_button = gr.Button("Generate Tribe Choices")
             tribe_choices = gr.Textbox(label="Available Tribes", lines=10)
@@ -833,10 +851,11 @@ def create_gui():
 
         with gr.Row():
             with gr.Column(scale=1):
-                tribe_overview = gr.Textbox(label="Tribe Overview", lines=10)
-                recent_history = gr.Textbox(label="Recent History", lines=5)
+                # Initialize these elements as hidden
+                tribe_overview = gr.Textbox(label="Tribe Overview", lines=10, visible=False)
+                recent_history = gr.Textbox(label="Recent History", lines=5, visible=False)
             with gr.Column(scale=2):
-                current_situation = gr.Textbox(label="Current Situation", lines=5)
+                current_situation = gr.Textbox(label="Current Situation", lines=5, visible=False)
                 action_button1 = gr.Button("Action 1", visible=False)
                 action_desc1 = gr.Textbox(label="", lines=3, visible=False)
                 action_button2 = gr.Button("Action 2", visible=False)
@@ -850,39 +869,75 @@ def create_gui():
 
         message_display = gr.Textbox(label="System Messages", lines=2)
 
-        start_button.click(generate_tribe_choices_gui, outputs=[tribe_choices, tribe_selection])
-        select_tribe_button.click(select_tribe_and_start_game,
-                                  inputs=tribe_selection,
-                                  outputs=[tribe_choices, tribe_selection, select_tribe_button,
-                                           tribe_overview, recent_history, current_situation,
-                                           action_button1, action_desc1, action_button2, action_desc2,
-                                           action_button3, action_desc3])
+        # Click event handlers remain the same
+        start_button.click(
+            generate_tribe_choices_gui,
+            outputs=[tribe_choices, tribe_selection]
+        )
 
-        action_button1.click(lambda: perform_action(0),
-                             outputs=[tribe_overview, recent_history, current_situation,
-                                      action_button1, action_desc1, action_button2, action_desc2,
-                                      action_button3, action_desc3])
-        action_button2.click(lambda: perform_action(1),
-                             outputs=[tribe_overview, recent_history, current_situation,
-                                      action_button1, action_desc1, action_button2, action_desc2,
-                                      action_button3, action_desc3])
-        action_button3.click(lambda: perform_action(2),
-                             outputs=[tribe_overview, recent_history, current_situation,
-                                      action_button1, action_desc1, action_button2, action_desc2,
-                                      action_button3, action_desc3])
+        select_tribe_button.click(
+            select_tribe_and_start_game,
+            inputs=[tribe_selection],
+            outputs=[
+                tribe_selection_group,
+                tribe_overview,
+                recent_history,
+                current_situation,
+                action_button1, action_desc1,
+                action_button2, action_desc2,
+                action_button3, action_desc3
+            ]
+        )
 
-        save_button.click(save_current_game,
-                          outputs=[message_display])
+        action_button1.click(
+            lambda: perform_action(0),
+            outputs=[
+                tribe_overview, recent_history, current_situation,
+                action_button1, action_desc1,
+                action_button2, action_desc2,
+                action_button3, action_desc3
+            ]
+        )
 
-        load_button.click(load_saved_game,
-                          outputs=[message_display,
-                                   tribe_overview,
-                                   recent_history,
-                                   current_situation,
-                                   action_button1, action_desc1,
-                                   action_button2, action_desc2,
-                                   action_button3, action_desc3,
-                                   tribe_selection_group])
+        action_button2.click(
+            lambda: perform_action(1),
+            outputs=[
+                tribe_overview, recent_history, current_situation,
+                action_button1, action_desc1,
+                action_button2, action_desc2,
+                action_button3, action_desc3
+            ]
+        )
+
+        action_button3.click(
+            lambda: perform_action(2),
+            outputs=[
+                tribe_overview, recent_history, current_situation,
+                action_button1, action_desc1,
+                action_button2, action_desc2,
+                action_button3, action_desc3
+            ]
+        )
+
+        save_button.click(
+            save_current_game,
+            outputs=[message_display]
+        )
+
+        load_button.click(
+            load_saved_game,
+            outputs=[
+                message_display,
+                tribe_selection_group,
+                tribe_overview,
+                recent_history,
+                current_situation,
+                action_button1, action_desc1,
+                action_button2, action_desc2,
+                action_button3, action_desc3
+            ]
+        )
+
     return app
 
 

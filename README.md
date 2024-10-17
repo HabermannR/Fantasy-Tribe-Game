@@ -6,7 +6,7 @@ Play a fantasy tribe from humble beginnings to earth-shattering godlike power, p
 
 Fantasy Tribe Game is an interactive text-based strategy game where you lead your chosen tribe through various challenges and quests. The game leverages LLMs to create dynamic storytelling, generating unique tribes, leaders, quests, and events that respond to your choices.
 
-![Screenshot 2024-10-17 110454](https://github.com/user-attachments/assets/a546cb3f-4ab6-429e-a627-34d5edc8c638)
+![Clipboard_10-17-2024_01](https://github.com/user-attachments/assets/ced35aec-c19f-4ddb-bf65-10f34570e403)
 
 ### Key Features
 

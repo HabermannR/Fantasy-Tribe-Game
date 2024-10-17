@@ -32,7 +32,7 @@ import os
 import random
 import textwrap
 from enum import Enum
-from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional, Literal
+from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
 
 import anthropic
 import gradio as gr
@@ -206,6 +206,10 @@ class ActionChoice(BaseModel):
 class NextChoices(BaseModel):
     choices: List[ActionChoice]
 
+class NextReactionChoices(BaseModel):
+    choices: List[ActionChoice]
+    situation: str
+
 
 class Quest(BaseModel):
     name: str
@@ -231,6 +235,11 @@ class QuestInfo(BaseModel):
 class Character(BaseModel):
     Name: str
     Title: str
+
+class ForeignCharacter(BaseModel):
+    Name: str
+    Title: str
+    Tribe: str
 
 class DiplomaticStance(Enum):
     PEACEFUL = "peaceful"
@@ -258,6 +267,7 @@ class GameStateBase(BaseModel):
     gold: int
     allies: List[str]
     enemies: List[str]
+    foreign_characters: List[ForeignCharacter]
     territory_size: int
     power_level: int
     tier: int
@@ -309,6 +319,10 @@ Leader:"""
 Gold: {self.gold}
 Allies: {', '.join(self.allies)}
 Enemies: {', '.join(self.enemies)}
+Other Characters:"""
+        for char in self.foreign_characters:
+            text += f"""\n    {char.Title}: {char.Name} from tribe {char.Tribe}"""
+        text += f"""\n
 Territory Size: {self.territory_size}
 Power Level: {self.power_level}
 Tribe Tier: {self.tier}"""
@@ -329,13 +343,14 @@ Tribe Tier: {self.tier}"""
             return "\n\n".join(formatted_events)
 
     @classmethod
-    def initialize(cls, Tribe: TribeChoice,  leader: Character) -> 'GameState':
+    def initialize(cls, tribe: TribeChoice,  leader: Character) -> 'GameState':
         return cls(
-            tribe=Tribe,
+            tribe=tribe,
             leaders=[leader, ],
             gold=100,
             allies=[],
             enemies=[],
+            foreign_characters=[],
             territory_size=10,
             power_level=5,
             tier=1,
@@ -361,14 +376,24 @@ current_game_state: Optional[GameState] = None
 history: List[dict] = []
 
 
-def generate_tribe_choices():
-    race_array = ["Lizardmen", "Giants", "Vampires", "Humans", "Orcs", "Dragons", "Necromancers", "Wizards",
-                  "Halflings"]
-    attribute_array = ["magic fire capabilities", "water magic", "strong fighting capabilities",
-                       "health regeneration", "immortality", "raise the undead capabilities", "telepathic abilities"]
+def generate_tribe_choices() -> InitialChoices:
+    # Generate 3 unique combinations of development type and diplomatic stance
+    #combinations: List[Tuple[DevelopmentType, DiplomaticStance]] = []
+    possible_combinations = [
+        (dev, stance)
+        for dev in DevelopmentType
+        for stance in DiplomaticStance
+    ]
 
-    race = [f"{random.choice(race_array)} with {random.choice(attribute_array)}" for _ in range(3)]
+    selected_combinations = random.sample(possible_combinations, 3)
 
+    # Get orientation descriptions for each combination
+    orientations = [
+        get_tribe_orientation(dev_type, stance)
+        for dev_type, stance in selected_combinations
+    ]
+
+    # Construct the prompt with the specific requirements for each tribe
     messages = [
         {
             "role": "system",
@@ -376,12 +401,23 @@ def generate_tribe_choices():
         },
         {
             "role": "user",
-            "content": f"""Present me three choices for my tribe. 
-Each choice should include:
-1. A unique tribe name (e.g., {race[0]}, {race[1]} or {race[2]}, but create new ones)
-2. A description of the tribe (without mentioning the tribe name)
-3. The tribe's development type (must be one of: "magical", "hybrid", or "practical")
-4. The tribe's diplomatic stance, "peaceful", "neutral" or "aggressive"
+            "content": f"""Create three unique tribes with the following specifications:
+
+Tribe 1: 
+- Must be {selected_combinations[0][0].value} in development and {selected_combinations[0][1].value} in diplomacy
+- Should fit the description: {orientations[0]}
+
+Tribe 2:
+- Must be {selected_combinations[1][0].value} in development and {selected_combinations[1][1].value} in diplomacy
+- Should fit the description: {orientations[1]}
+
+Tribe 3:
+- Must be {selected_combinations[2][0].value} in development and {selected_combinations[2][1].value} in diplomacy
+- Should fit the description: {orientations[2]}
+
+For each tribe provide:
+1. A unique tribe name (do not use 'Sylvan')
+2. A description of the tribe (without mentioning the tribe name, and do not quote the given description directly)
 """
         }
     ]
@@ -390,16 +426,15 @@ Each choice should include:
 
     if choices:
         print("\n=== Available Tribe Choices ===")
-        for number, choice in enumerate(choices.choices):
-            tribe_type = get_tribe_orientation(choice.development, choice.stance)
+        for number, (choice, (dev_type, stance)) in enumerate(zip(choices.choices, selected_combinations)):
+            tribe_type = get_tribe_orientation(dev_type, stance)
             print(f"\n{number}. {choice.name}, {tribe_type}")
             print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
                                 subsequent_indent="   "))
 
     return choices
 
-
-def get_leader(chosen_tribe):
+def get_leader(chosen_tribe) -> Character:
     messages = [
         {
             "role": "system",
@@ -420,7 +455,7 @@ def get_leader(chosen_tribe):
     return leader
 
 
-def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance):
+def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance) -> str:
     """
     Get the orientation-specific description for a tribe based on their development path and diplomatic stance.
 
@@ -451,12 +486,13 @@ def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance
             return "Warriors who excel in military innovation"
 
 
-def get_tier_specific_prompt(tier: int, development: DevelopmentType, stance: DiplomaticStance):
+def get_tier_specific_prompt(tier: int, development: DevelopmentType, stance: DiplomaticStance)-> str:
     """
     Generate a prompt based on tier level and tribe orientation.
     """
     orientation = get_tribe_orientation(development, stance)
-
+    specific = ""
+    base_prompt = ""
     if tier == 1:
         base_prompt = """Focus on local establishment and survival. Actions should involve:
 - Gathering essential resources, establishing basic infrastructure, and dealing with immediate threats."""
@@ -672,7 +708,7 @@ def get_tier_specific_prompt(tier: int, development: DevelopmentType, stance: Di
     return f"{base_prompt}\n{specific}\n\n{consequence_prompt}"
 
 
-def generate_next_choices(game_state: GameState):
+def generate_next_choices(game_state: GameState) ->NextChoices:
     tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
     last_actions_prompt = ""
     if game_state.last_action_sets:
@@ -711,6 +747,52 @@ Be creative, do not repeat these old choices:
     ]
 
     next_choices = make_api_call(messages, NextChoices, max_tokens=2000)
+    if next_choices:
+        print("\n=== Available Actions ===")
+        for i, choice in enumerate(next_choices.choices, 1):
+            print(f"\n{i}. {choice.caption}")
+            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
+                                subsequent_indent="   "))
+            print(f"   Probability of Success: {choice.probability:.2f}")
+
+    return next_choices
+
+def generate_next_reaction_choices(game_state: GameState) -> NextReactionChoices:
+    #tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
+
+    recent_history = game_state.get_recent_history(num_events=5)
+
+    if game_state.last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
+        probability_adjustment = "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
+    else:
+        probability_adjustment = "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
+        },
+        {
+            "role": "user",
+            "content": f"""Here's the current game state:
+
+{game_state.to_context_string()}
+
+Recent History:
+{recent_history}
+
+Based on this information, create a reaction of one of the allied or enemy tribes. Add this reaction to {game_state.quest_description} and save it in "situation".
+The reaction should include one of the foreign characters of the foreign tribe.
+Then present three possible actions I can take next, possibly utilizing one or more of the tribes characters.  
+Include potential consequences and strategic considerations for each action.
+{probability_adjustment}
+Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
+but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. 
+"""
+        }
+    ]
+
+    next_choices = make_api_call(messages, NextReactionChoices, max_tokens=2000)
     if next_choices:
         print("\n=== Available Actions ===")
         for i, choice in enumerate(next_choices.choices, 1):
@@ -813,6 +895,7 @@ For each approach, provide:
 3. A probability of success (between 0.5 and 0.8)
 
 Be creative and consider the current game state, the quest's progress so far, recent history, and resources available to the player. Utilize the tribes leaders.
+Possibly include a reaction of one of the allied or enemy tribes. The reaction should include one of the foreign characters of the foreign tribe.
 {final_quest}
 """
         }
@@ -867,11 +950,11 @@ Please provide an updated game state, including:
 But do not change the tribe's name every turn, only when important event have happened.
 You can also add new leaders, for example heroes, generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
 2. Updated gold values. Tier 1 should be between 0 and 200 gold, Tier 2 between 100 and 1000, Tier 3 between 1000 and 10000, and in Tier 4 gold should be over 10000.
-3. Any new allies or enemies
+3. Any new allies or enemies, and their leaders and heroes. Keep these foreign characters also at max of 5. 
 4. Changes to territory size, power level and the current tier. 
-    Tier 1 is local issues and basic survival, power level 1-10, power level may rise 1 or 2 points
-    Tier 2 is regional influence and early empire-building, power level 11-30, power level may rise 2-5 points
-    Tier 3 is nation-building and complex diplomacy, power level 31-75, power level may rise 2-10 points
+    Tier 1 is local issues and basic survival, power level 1-15, power level may rise 1 or 2 points
+    Tier 2 is regional influence and early empire-building, power level 16-40, power level may rise 2-5 points
+    Tier 3 is nation-building and complex diplomacy, power level 41-75, power level may rise 2-10 points
     Tier 4 is world-shaping decisions and legendary quests, power level > 75, power level may rise 10+ points
 {quest_update}
 At last, add a description of what happened and its outcome in your role as game master in event_result.
@@ -901,7 +984,7 @@ def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
 
 
 def decide_event_type() -> str:
-    return random.choices(["single_event", "new_quest"], weights=[0.7, 0.3], k=1)[0]
+    return random.choices(["single_event", "reaction", "new_quest"], weights=[0.5, 0.3, 0.2], k=1)[0]
 
 
 def save_game(game_state: GameState, filename: str):
@@ -1059,11 +1142,15 @@ def create_gui():
             current_action_choices = generate_next_quest_part(current_game_state)
         else:
             event_type = decide_event_type()
-
+            print(f"Event type: {event_type}")
             if event_type == "new_quest":
                 current_action_choices = generate_new_quest(current_game_state)
                 print(f"New Quest: {current_game_state.current_quest.name}")
-            else:  # single_event
+            elif event_type == "reaction":
+                reaction = generate_next_reaction_choices(current_game_state)
+                current_game_state.quest_description = reaction.situation
+                current_action_choices = NextChoices(choices=reaction.choices)
+            else: # single_event
                 current_action_choices = generate_next_choices(current_game_state)
 
         current_game_state.current_action_choices = current_action_choices

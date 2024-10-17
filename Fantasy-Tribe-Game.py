@@ -40,16 +40,15 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 try:
-    anthropicKey = os.environ.get("ANTHROPIC_API_KEY")
-except:
+    anthropicKey = os.environ["ANTHROPIC_API_KEY"]
+except KeyError:
+    print("ANTHROPIC_API_KEY not found in environment variables")
     anthropicKey = ""
 try:
     openAIKey = os.environ.get("OPENAI_API_KEY")
-except:
+except KeyError:
+    print("OPENAI_API_KEY not found in environment variables")
     openAIKey = ""
-
-openAImodel = "gpt-4o-mini"  # "gpt-4o
-local_url = "http://127.0.0.1:1234/v1"
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -61,7 +60,9 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC  # choose your LLM provider here
+    LLM_PROVIDER: LLMProvider = LLMProvider.OPENAI
+    openai_model: str = "gpt-4o-mini"
+    local_url: str = "http://127.0.0.1:1234/v1"
 
 
 class EnumEncoder(json.JSONEncoder):
@@ -127,7 +128,7 @@ class AnthropicStrategy(LLMStrategy):
 class OpenAIStrategy(LLMStrategy):
     def __init__(self):
         self.client = OpenAI(api_key=openAIKey)
-        self.model = openAImodel
+        self.model = config.openai_model
 
     def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T],
                       max_tokens: int = 1500) -> Any | None:
@@ -146,7 +147,7 @@ class OpenAIStrategy(LLMStrategy):
 class LocalModelStrategy(LLMStrategy):
     def __init__(self):
         self.client = OpenAI(
-            base_url=local_url,
+            base_url=config.local_url,
             api_key="not-needed"
         )
         self.model = "local-model"
@@ -678,9 +679,33 @@ def create_gui():
     global current_game_state
     global current_tribe_choices
     global current_action_choices
+    global config
+    global llm_context
 
     current_tribe_choices = None
     current_action_choices = None
+
+    def save_settings(provider_str, model, url):
+        try:
+            # Convert string to enum
+            provider = LLMProvider(provider_str.lower())
+
+            # Update config
+            config.LLM_PROVIDER = provider
+
+            # Update global llm_context with new strategy
+            global llm_context
+            llm_context = LLMContext(get_llm_strategy(provider))
+
+            # Store additional settings that might be needed by specific strategies
+            if hasattr(config, 'openai_model'):
+                config.openai_model = model
+            if hasattr(config, 'local_url'):
+                config.local_url = url
+
+            return f"Settings saved: Provider: {provider.value}, Model: {model}, URL: {url}"
+        except ValueError as e:
+            return f"Error saving settings: {str(e)}"
 
     def save_current_game():
         if current_game_state:
@@ -858,32 +883,77 @@ def create_gui():
     with gr.Blocks(title="Fantasy Tribe Game") as app:
         gr.Markdown("# Fantasy Tribe Game")
 
-        # Create tribe selection group
-        with gr.Group() as tribe_selection_group:
-            start_button = gr.Button("Generate Tribe Choices")
-            tribe_choices = gr.Textbox(label="Available Tribes", lines=10)
-            tribe_selection = gr.Radio(choices=[1, 2, 3], label="Select your tribe", visible=False)
-            select_tribe_button = gr.Button("Select Tribe")
+        # Game Tab
+        with gr.Tab("Game"):
 
-        with gr.Row():
-            with gr.Column(scale=1):
-                # Initialize these elements as hidden
-                tribe_overview = gr.Textbox(label="Tribe Overview", lines=10, visible=False)
-                recent_history = gr.Textbox(label="Recent History", lines=5, visible=False)
-            with gr.Column(scale=2):
-                current_situation = gr.Textbox(label="Current Situation", lines=5, visible=False)
-                action_button1 = gr.Button("Action 1", visible=False)
-                action_desc1 = gr.Textbox(label="", lines=3, visible=False)
-                action_button2 = gr.Button("Action 2", visible=False)
-                action_desc2 = gr.Textbox(label="", lines=3, visible=False)
-                action_button3 = gr.Button("Action 3", visible=False)
-                action_desc3 = gr.Textbox(label="", lines=3, visible=False)
+            # Create tribe selection group
+            with gr.Group() as tribe_selection_group:
+                start_button = gr.Button("Generate Tribe Choices")
+                tribe_choices = gr.Textbox(label="Available Tribes", lines=10)
+                tribe_selection = gr.Radio(choices=[1, 2, 3], label="Select your tribe", visible=False)
+                select_tribe_button = gr.Button("Select Tribe")
 
-        with gr.Row():
-            save_button = gr.Button("Save Game")
-            load_button = gr.Button("Load Game")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    # Initialize these elements as hidden
+                    tribe_overview = gr.Textbox(label="Tribe Overview", lines=10, visible=False)
+                    recent_history = gr.Textbox(label="Recent History", lines=5, visible=False)
+                with gr.Column(scale=2):
+                    current_situation = gr.Textbox(label="Current Situation", lines=5, visible=False)
+                    action_button1 = gr.Button("Action 1", visible=False)
+                    action_desc1 = gr.Textbox(label="", lines=3, visible=False)
+                    action_button2 = gr.Button("Action 2", visible=False)
+                    action_desc2 = gr.Textbox(label="", lines=3, visible=False)
+                    action_button3 = gr.Button("Action 3", visible=False)
+                    action_desc3 = gr.Textbox(label="", lines=3, visible=False)
 
-        message_display = gr.Textbox(label="System Messages", lines=2)
+            with gr.Row():
+                save_button = gr.Button("Save Game")
+                load_button = gr.Button("Load Game")
+
+            message_display = gr.Textbox(label="System Messages", lines=2)
+
+            # Add Settings Tab
+        with gr.Tab("Settings"):
+            with gr.Group():
+                gr.Markdown("## LLM Configuration")
+                provider_dropdown = gr.Dropdown(
+                    choices=[provider.value for provider in LLMProvider],
+                    value=config.LLM_PROVIDER.value,
+                    label="LLM Provider"
+                )
+                model_dropdown = gr.Dropdown(
+                    choices=["gpt-4o-mini", "gpt-4o"],
+                    value=getattr(config, 'openai_model', "gpt-4o-mini"),
+                    label="OpenAI Model",
+                )
+                local_url_input = gr.Textbox(
+                    value=getattr(config, 'local_url', "http://127.0.0.1:1234/v1"),
+                    label="Local API URL",
+                    placeholder="http://127.0.0.1:1234/v1"
+                )
+                settings_save_btn = gr.Button("Save Settings")
+                settings_message = gr.Textbox(label="Settings Status", interactive=False)
+
+                # Add visibility rules for model and URL inputs
+                def update_input_visibility(provider):
+                    return {
+                        model_dropdown: gr.update(visible=provider.lower() == "openai"),
+                        local_url_input: gr.update(visible=provider.lower() == "local")
+                    }
+
+                provider_dropdown.change(
+                    update_input_visibility,
+                    inputs=[provider_dropdown],
+                    outputs=[model_dropdown, local_url_input]
+                )
+
+        # Connect settings events
+        settings_save_btn.click(
+            save_settings,
+            inputs=[provider_dropdown, model_dropdown, local_url_input],
+            outputs=[settings_message]
+        )
 
         # Click event handlers remain the same
         start_button.click(
@@ -959,4 +1029,6 @@ def create_gui():
 
 if __name__ == "__main__":
     app = create_gui()
-    app.launch()
+    app.launch(share=False,
+                debug=True,
+                server_name="0.0.0.0")

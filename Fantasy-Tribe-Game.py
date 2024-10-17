@@ -32,7 +32,7 @@ import os
 import random
 import textwrap
 from enum import Enum
-from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
+from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional, Literal
 
 import anthropic
 import gradio as gr
@@ -60,7 +60,7 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.OPENAI
+    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC
     openai_model: str = "gpt-4o-mini"
     local_url: str = "http://127.0.0.1:1234/v1"
 
@@ -197,7 +197,6 @@ class OutcomeType(Enum):
     NEUTRAL = "neutral"
     NEGATIVE = "negative"
 
-
 class ActionChoice(BaseModel):
     caption: str
     description: str
@@ -233,19 +232,28 @@ class Character(BaseModel):
     Name: str
     Title: str
 
+class DiplomaticStance(Enum):
+    PEACEFUL = "peaceful"
+    NEUTRAL = "neutral"
+    AGGRESSIVE = "aggressive"
+
+class DevelopmentType(Enum):
+    MAGICAL = "magical"
+    HYBRID = "hybrid"
+    PRACTICAL = "practical"
 
 class TribeChoice(BaseModel):
-    tribe: str
+    name: str
     description: str
-
+    development: DevelopmentType
+    stance: DiplomaticStance
 
 class InitialChoices(BaseModel):
     choices: List[TribeChoice]
 
 
 class GameStateBase(BaseModel):
-    tribe_name: str
-    tribe_description: str
+    tribe: TribeChoice
     leaders: List[Character]
     gold: int
     allies: List[str]
@@ -288,12 +296,17 @@ class GameState(GameStateBase):
             self.last_action_sets.pop(0)
 
     def to_context_string(self) -> str:
-        text = f"""{self.tribe_name}
-{self.tribe_description}
+        tribe_type = get_tribe_orientation(self.tribe.development, self.tribe.stance)
+        text = f"""{self.tribe.name}
+{tribe_type}
+
+{self.tribe.description}
+
 Leader:"""
         for leader in self.leaders:
             text += f"""\n    {leader.Title}: {leader.Name}"""
-        text += f"""\n\nGold: {self.gold}
+        text += f"""\n
+Gold: {self.gold}
 Allies: {', '.join(self.allies)}
 Enemies: {', '.join(self.enemies)}
 Territory Size: {self.territory_size}
@@ -316,10 +329,9 @@ Tribe Tier: {self.tier}"""
             return "\n\n".join(formatted_events)
 
     @classmethod
-    def initialize(cls, tribe_name: str, tribe_description: str, leader: Character) -> 'GameState':
+    def initialize(cls, Tribe: TribeChoice,  leader: Character) -> 'GameState':
         return cls(
-            tribe_name=tribe_name,
-            tribe_description=tribe_description,
+            tribe=Tribe,
             leaders=[leader, ],
             gold=100,
             allies=[],
@@ -364,9 +376,13 @@ def generate_tribe_choices():
         },
         {
             "role": "user",
-            "content": f"""Present me three choices for my tribe, for example: {race[0]}, {race[1]}, {race[2]}. 
-Don't just use these examples, create new ones. 
-Give me a description of each tribe, without the tribe name."""
+            "content": f"""Present me three choices for my tribe. 
+Each choice should include:
+1. A unique tribe name (e.g., {race[0]}, {race[1]} or {race[2]}, but create new ones)
+2. A description of the tribe (without mentioning the tribe name)
+3. The tribe's development type (must be one of: "magical", "hybrid", or "practical")
+4. The tribe's diplomatic stance, "peaceful", "neutral" or "aggressive"
+"""
         }
     ]
 
@@ -375,7 +391,8 @@ Give me a description of each tribe, without the tribe name."""
     if choices:
         print("\n=== Available Tribe Choices ===")
         for number, choice in enumerate(choices.choices):
-            print(f"\n{number}. {choice.tribe}")
+            tribe_type = get_tribe_orientation(choice.development, choice.stance)
+            print(f"\n{number}. {choice.name}, {tribe_type}")
             print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
                                 subsequent_indent="   "))
 
@@ -403,38 +420,260 @@ def get_leader(chosen_tribe):
     return leader
 
 
-def get_tier_specific_prompt(tier):
-    tier_specific_prompt = ""
+def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance):
+    """
+    Get the orientation-specific description for a tribe based on their development path and diplomatic stance.
+
+    Args:
+        development (Development): The tribe's development focus (magical, hybrid, or practical)
+        stance (DiplomaticStance): The tribe's diplomatic stance
+    """
+    if development == DevelopmentType.MAGICAL:
+        if stance == DiplomaticStance.PEACEFUL:
+            return "Mystic sages who commune with natural forces"
+        elif stance == DiplomaticStance.NEUTRAL:
+            return "Pragmatic mages who balance power and wisdom"
+        else:  # AGGRESSIVE
+            return "Battle-mages who harness destructive magic"
+    elif development == DevelopmentType.HYBRID:
+        if stance == DiplomaticStance.PEACEFUL:
+            return "Technomancers who blend science and spirituality"
+        elif stance == DiplomaticStance.NEUTRAL:
+            return "Arcane engineers who merge magic with technology"
+        else:  # AGGRESSIVE
+            return "Magitech warriors who combine spell and steel"
+    else:  # PRACTICAL
+        if stance == DiplomaticStance.PEACEFUL:
+            return "Builders who focus on technological advancement"
+        elif stance == DiplomaticStance.NEUTRAL:
+            return "Innovators who balance progress with strength"
+        else:  # AGGRESSIVE
+            return "Warriors who excel in military innovation"
+
+
+def get_tier_specific_prompt(tier: int, development: DevelopmentType, stance: DiplomaticStance):
+    """
+    Generate a prompt based on tier level and tribe orientation.
+    """
+    orientation = get_tribe_orientation(development, stance)
+
     if tier == 1:
-        tier_specific_prompt = """
-Focus on local establishment and survival. Actions should involve:
-- For all tribes: Gathering essential resources, establishing basic infrastructure, and dealing with immediate threats.
-- For magic-oriented tribes: Discovering latent magical abilities, communing with local spirits, or deciphering ancient runes.
-- For practical-oriented tribes: Developing primitive tools, understanding local flora and fauna, or establishing basic crafting techniques.
-Consider small-scale diplomacy with neighboring tribes and the balance between immediate needs and future potential."""
+        base_prompt = """Focus on local establishment and survival. Actions should involve:
+- Gathering essential resources, establishing basic infrastructure, and dealing with immediate threats."""
+
+        if development == DevelopmentType.MAGICAL:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Discovering latent magical abilities
+- Communing with local spirits
+- Deciphering ancient runes
+- Establishing harmony with natural forces"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Learning both protective and offensive magic
+- Establishing magical research centers
+- Balancing spiritual harmony with power
+- Creating versatile magical defenses"""
+            else:  # AGGRESSIVE
+                specific = """- Discovering combat magic fundamentals
+- Training battle-mage initiates
+- Establishing magical defensive perimeters
+- Identifying sources of destructive power"""
+        elif development == DevelopmentType.HYBRID:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Combining simple machines with minor enchantments
+- Studying both natural laws and magical principles
+- Creating enhanced farming tools
+- Developing basic magitech infrastructure"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Developing enchanted tools and weapons
+- Creating hybrid defense systems
+- Establishing basic arcane workshops
+- Merging magical and mechanical power"""
+            else:  # AGGRESSIVE
+                specific = """- Crafting magically enhanced weapons
+- Training techno-warrior initiates
+- Building hybrid fortifications
+- Developing magitech combat systems"""
+        else:  # PRACTICAL
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Developing primitive tools
+- Understanding local flora and fauna
+- Establishing basic crafting techniques
+- Building sustainable settlements"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Creating multipurpose tools and weapons
+- Developing defensive structures
+- Establishing trade and security
+- Training militia for protection"""
+            else:  # AGGRESSIVE
+                specific = """- Crafting basic weapons and armor
+- Training warrior bands
+- Building defensive structures
+- Developing combat tactics"""
+
     elif tier == 2:
-        tier_specific_prompt = """
-Focus on expansion and power cultivation. Actions should involve:
-- For magic-oriented tribes: Harnessing ancient magics, taming mythical beasts, and attuning to elemental forces.
-- For practical-oriented tribes: Developing advanced technologies, establishing trade networks, and mastering the land.
-Consider the balance between progress and tradition. Explore the consequences of your chosen path, be it arcane or mundane, and its impact on your growing influence."""
+        base_prompt = """Focus on expansion and power cultivation. Actions should involve:"""
+
+        if development == DevelopmentType.MAGICAL:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Harnessing ancient magics
+- Taming mythical beasts
+- Attuning to elemental forces
+- Creating magical sanctuaries"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Developing versatile magical applications
+- Creating magical barriers and wards
+- Establishing diplomatic magical channels
+- Training battle-ready peacekeepers"""
+            else:  # AGGRESSIVE
+                specific = """- Mastering combat spells and magical warfare
+- Binding war spirits to weapons
+- Creating magical siege equipment
+- Establishing magical military academies"""
+        elif development == DevelopmentType.HYBRID:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Creating self-maintaining enchanted machines
+- Developing magical power generators
+- Establishing magitech research centers
+- Harmonizing technology with natural magic"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Engineering spell-powered devices
+- Creating hybrid defense networks
+- Establishing technomantic guilds
+- Developing versatile magitech systems"""
+            else:  # AGGRESSIVE
+                specific = """- Developing magitech weaponry
+- Creating enchanted war machines
+- Establishing combat technomancy schools
+- Engineering magical artillery systems"""
+        else:  # PRACTICAL
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Developing advanced technologies
+- Establishing trade networks
+- Mastering the land
+- Building centers of learning"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Creating defensive technologies
+- Establishing military deterrents
+- Building diplomatic infrastructure
+- Developing dual-use innovations"""
+            else:  # AGGRESSIVE
+                specific = """- Developing advanced weapons
+- Establishing military alliances
+- Creating siege engines
+- Training elite military units"""
+
     elif tier == 3:
-        tier_specific_prompt = """
-Focus on realm-shaping endeavors and far-reaching influence. Actions should involve:
-- For magic-oriented tribes: Forging pacts with supernatural entities, embarking on quests for powerful artifacts, and manipulating the fabric of reality.
-- For practical-oriented tribes: Creating grand wonders, establishing intricate political systems, and pioneering revolutionary innovations.
-Consider the long-term implications of your decisions on the world. Navigate complex alliances and rivalries, whether they're with otherworldly beings or rival empires."""
+        base_prompt = """Focus on realm-shaping endeavors and far-reaching influence. Actions should involve:"""
+
+        if development == DevelopmentType.MAGICAL:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Forging pacts with benevolent entities
+- Creating magical wonderlands
+- Establishing magical healing centers
+- Developing reality-harmonizing magic"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Balancing magical forces
+- Creating magical deterrence systems
+- Establishing planar diplomatic channels
+- Developing reality-stabilizing magic"""
+            else:  # AGGRESSIVE
+                specific = """- Creating magical weapons of mass destruction
+- Summoning armies of magical constructs
+- Establishing magical dominion
+- Developing reality-warping battle magic"""
+        elif development == DevelopmentType.HYBRID:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Creating self-evolving magitech ecosystems
+- Developing reality-engineering devices
+- Establishing technomantic sanctuaries
+- Merging consciousness with magitech"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Engineering planar manipulation devices
+- Creating hybrid reality stabilizers
+- Establishing multidimensional networks
+- Developing synthetic magic systems"""
+            else:  # AGGRESSIVE
+                specific = """- Creating magitech superweapons
+- Engineering spell-powered war titans
+- Establishing technomantic armies
+- Developing reality-breaking siege engines"""
+        else:  # PRACTICAL
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Creating grand wonders
+- Establishing intricate political systems
+- Pioneering revolutionary innovations
+- Building technological marvels"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Developing autonomous defense systems
+- Creating technological deterrents
+- Establishing global influence networks
+- Engineering advanced civilization systems"""
+            else:  # AGGRESSIVE
+                specific = """- Developing advanced military technology
+- Creating vast armies and navies
+- Establishing military industrial complexes
+- Engineering superweapons"""
+
     elif tier >= 4:
-        tier_specific_prompt = """
-Focus on world-altering achievements and cosmic influence. Actions should have far-reaching consequences that reshape reality itself. Consider:
-- For magic-oriented tribes: Ascending to godhood, rewriting the laws of magic, or creating new planes of existence.
-- For practical-oriented tribes: Achieving technological singularity, terraforming entire worlds, or unlocking the secrets of creation itself.
-Confront or embody forces beyond mortal comprehension. Your decisions will echo through eternity, shaping the destiny of countless realms and realities."""
-    return tier_specific_prompt
+        base_prompt = """Focus on world-altering achievements and cosmic influence. Actions should have far-reaching consequences that reshape reality itself."""
+
+        if development == DevelopmentType.MAGICAL:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Ascending to benevolent godhood
+- Creating planes of harmony
+- Establishing cosmic balance
+- Achieving magical transcendence"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Becoming custodians of reality
+- Creating planes of balance
+- Establishing cosmic order
+- Achieving magical equilibrium"""
+            else:  # AGGRESSIVE
+                specific = """- Becoming gods of war
+- Creating planes of eternal conflict
+- Wielding reality-destroying magic
+- Commanding armies of cosmic beings"""
+        elif development == DevelopmentType.HYBRID:
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Creating techno-organic realities
+- Merging consciousness with the cosmos
+- Engineering synthetic divine beings
+- Achieving technomantic singularity"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Becoming synthetic demigods
+- Creating hybrid dimensional matrices
+- Establishing techno-magical order
+- Achieving perfect synthesis"""
+            else:  # AGGRESSIVE
+                specific = """- Creating magitech death stars
+- Engineering spell-powered cosmic weapons
+- Establishing technomantic dominion
+- Achieving destructive synthesis"""
+        else:  # PRACTICAL
+            if stance == DiplomaticStance.PEACEFUL:
+                specific = """- Achieving technological singularity
+- Terraforming entire worlds
+- Unlocking the secrets of creation
+- Building utopian civilizations"""
+            elif stance == DiplomaticStance.NEUTRAL:
+                specific = """- Creating self-sustaining systems
+- Establishing cosmic balance through technology
+- Engineering perfect equilibrium
+- Achieving technological transcendence"""
+            else:  # AGGRESSIVE
+                specific = """- Creating planet-destroying weapons
+- Establishing interplanar military dominion
+- Engineering perfect warrior races
+- Achieving technological supremacy"""
+
+    consequence_prompt = """Consider the implications of your path as {}. Your decisions will shape not only your people's destiny but the very nature of power in this world.""".format(
+        orientation)
+
+    return f"{base_prompt}\n{specific}\n\n{consequence_prompt}"
 
 
 def generate_next_choices(game_state: GameState):
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier)
+    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
     last_actions_prompt = ""
     if game_state.last_action_sets:
         last_actions_str = ", ".join([action for action_set in game_state.last_action_sets for action in action_set])
@@ -485,7 +724,7 @@ Be creative, do not repeat these old choices:
 
 def generate_new_quest(game_state: GameState) -> NextChoices:
     recent_history = game_state.get_recent_history(num_events=5)
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier)
+    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
 
     messages = [
         {
@@ -544,7 +783,7 @@ Output your response as a JSON object matching the QuestInfo schema.
 def generate_next_quest_part(game_state: GameState) -> NextChoices:
     current_quest = game_state.current_quest
     recent_history = game_state.get_recent_history(num_events=5)
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier)
+    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
     if current_quest.current_part == current_quest.total_parts:
         final_quest = "This is the final part, make the choices epic and exciting"
     else:
@@ -592,6 +831,9 @@ Be creative and consider the current game state, the quest's progress so far, re
 
 def generate_new_game_state(game_state: GameState, chosen_action: ActionChoice,
                             outcome: OutcomeType) -> GameStateUpdate:
+    llm_specific = ""
+    if config.LLM_PROVIDER == LLMProvider.ANTHROPIC:
+        llm_specific ="keep your answer short for event_result"
     recent_history = game_state.get_recent_history(num_events=5)
     current_quest = game_state.current_quest
     if current_quest:
@@ -608,6 +850,8 @@ def generate_new_game_state(game_state: GameState, chosen_action: ActionChoice,
             "content": f"""
 Current game state:
 {game_state.to_context_string()}
+The tribes development is {game_state.tribe.development}, its diplomatic stance is {game_state.tribe.stance}.
+Change this only for major upheavals!
 
 Recent History:
 {recent_history}
@@ -632,6 +876,7 @@ You can also add new leaders, for example heroes, generals, mages, shamans, and 
 {quest_update}
 At last, add a description of what happened and its outcome in your role as game master in event_result.
 Do not talk about Power level and Tier in event_result, instead focus on telling the story of the event.
+{llm_specific}
 
 Be creative but consistent with the current game state, active quests, and the chosen action.
 """
@@ -833,8 +1078,11 @@ def create_gui():
         if current_tribe_choices:
             result = ""
             for number, choice in enumerate(current_tribe_choices.choices):
-                result += f"{number + 1}. {choice.tribe}\n"
+                tribe_type = get_tribe_orientation(choice.development, choice.stance)
+                result += f"{number + 1}. {choice.name}, "
+                result += f"{tribe_type}\n"
                 result += f"{choice.description}\n\n"
+
             return result, gr.update(visible=True, choices=[1, 2, 3])
         else:
             return "Error generating initial choices. Please try again.", gr.update(visible=False)
@@ -846,7 +1094,7 @@ def create_gui():
                 (tribe for index, tribe in enumerate(current_tribe_choices.choices, 1) if index == choice), None)
             if chosen_tribe:
                 leader = get_leader(chosen_tribe)
-                current_game_state = GameState.initialize(chosen_tribe.tribe, chosen_tribe.description, leader)
+                current_game_state = GameState.initialize(chosen_tribe, leader)
                 current_action_choices = generate_next_choices(current_game_state)
                 current_game_state.current_action_choices = current_action_choices
 

@@ -893,6 +893,11 @@ def get_probability_adjustment(last_outcome: OutcomeType) -> str:
 
 def generate_new_game_state(game_state: GameState) -> GameStateBase:
     recent_history = game_state.get_recent_history(num_events=5)
+    tribes_prompt = ""
+    if game_state.turn > 5 and len(game_state.enemies) < 1:
+        tribes_prompt += "Add one or two enemies"
+    if game_state.turn > 3 and len(game_state.enemies) < 2:
+        tribes_prompt += "Add one or two neutral factions"
 
     messages = [
         {
@@ -925,6 +930,7 @@ But do not change the tribe's name every turn, only when important event have ha
 You can also add new leaders, for example heroes, generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
 2. Updated gold values. Tier 1 should be between 0 and 200 gold, Tier 2 between 100 and 1000, Tier 3 between 1000 and 10000, and in Tier 4 gold should be over 10000.
 3. Any new allies, neutrals or enemies, and their leaders and heroes. Keep these foreign characters also at max of 5.
+{enemy_prompt}
 It takes many turns to move neutral factions to become allies, and even more to form formal alliances! 
 4. Changes to territory size, power level and the current tier. 
     Tier 1 is local issues and basic survival, power level 1-15, power level may rise 1 or 2 points

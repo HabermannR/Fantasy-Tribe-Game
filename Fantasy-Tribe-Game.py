@@ -110,7 +110,7 @@ class AnthropicStrategy(LLMStrategy):
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=messages[0]['content'],  # Use the content of the first message as the system message
+                system=messages[0]['content'] + " do not use the word Nexus",  # Use the content of the first message as the system message
                 messages=messages[1:],  # Use the remaining messages, excluding the first one
                 tools=[{
                     "name": "Tribe_Game",
@@ -271,7 +271,8 @@ class GameStateBase(BaseModel):
     territory_size: int
     power_level: int
     tier: int
-    quest_description: str
+    situation: str
+    old_situation: str
 
 
 class GameStateUpdate(GameStateBase):
@@ -282,6 +283,7 @@ class GameState(GameStateBase):
     history: List[Dict[str, Any]] = Field(default_factory=list)
     current_action_choices: Optional[NextChoices] = None
     last_action_sets: List[List[str]] = Field(default_factory=list)
+    chosen_action: ActionChoice = None
     last_outcome: Optional[OutcomeType] = None
     current_quest: Optional[Quest] = None
     turn: int = 1
@@ -328,8 +330,12 @@ Power Level: {self.power_level}
 Tribe Tier: {self.tier}"""
         return text
 
-    def get_recent_history(self, num_events: int = 5, full_output: bool = True) -> str:
-        recent_events = self.history[-num_events:]
+    def get_recent_history(self, num_events: int = 5, full_output: bool = True, start_event: int = 1) -> str:
+        # Calculate the starting index from the end
+        start_idx = start_event + num_events - 1
+
+        # Get the slice of events we want, in reverse order
+        recent_events = self.history[-start_idx:-start_event + 1 if start_event > 1 else None][-num_events:]
         if full_output:
             return "\n\n".join([f"- {event['description']} (Outcome: {OutcomeType(event['outcome']).name})"
                                 for event in recent_events])
@@ -354,7 +360,8 @@ Tribe Tier: {self.tier}"""
             territory_size=10,
             power_level=5,
             tier=1,
-            quest_description=""
+            situation="",
+            old_situation=""
         )
 
     def update(self, new_state: GameStateUpdate, outcome: OutcomeType):
@@ -760,7 +767,8 @@ Be creative, do not repeat these old choices:
 def generate_next_reaction_choices(game_state: GameState) -> NextReactionChoices:
     #tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
 
-    recent_history = game_state.get_recent_history(num_events=5)
+    recent_history = game_state.get_recent_history(num_events=5, start_event=2)
+    last_action = game_state.get_recent_history(num_events=1)
 
     if game_state.last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
         probability_adjustment = "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
@@ -774,16 +782,85 @@ def generate_next_reaction_choices(game_state: GameState) -> NextReactionChoices
         },
         {
             "role": "user",
-            "content": f"""Here's the current game state:
-
-{game_state.to_context_string()}
+            "content": f"""Current game state: 
+            Player tribe: {game_state.to_context_string()}
 
 Recent History:
 {recent_history}
 
-Based on this information, create a reaction of one of the allied or enemy tribes. Add this reaction to {game_state.quest_description} and save it in "situation".
+Last situation: 
+{game_state.old_situation} 
+    
+The player chose the following action: {game_state.chosen_action.caption}
+{game_state.chosen_action.description}
+
+The outcome of this action was:
+{last_action}
+
+Based on this information, create a reaction to this event. Add this follow up to:
+{game_state.situation} 
+while slightly summarizing it and save it in "situation".
+
 The reaction should include one of the foreign characters of the foreign tribe.
 Then present three possible actions I can take next, possibly utilizing one or more of the tribes characters.  
+Include potential consequences and strategic considerations for each action.
+{probability_adjustment}
+Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
+but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. 
+"""
+        }
+    ]
+
+    next_choices = make_api_call(messages, NextReactionChoices, max_tokens=2000)
+    if next_choices:
+        print("\n=== Available Actions ===")
+        for i, choice in enumerate(next_choices.choices, 1):
+            print(f"\n{i}. {choice.caption}")
+            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
+                                subsequent_indent="   "))
+            print(f"   Probability of Success: {choice.probability:.2f}")
+
+    return next_choices
+
+def generate_next_follow_choices(game_state: GameState) -> NextReactionChoices:
+    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
+
+    recent_history = game_state.get_recent_history(num_events=5, start_event=2)
+    last_action = game_state.get_recent_history(num_events=1)
+
+    if game_state.last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
+        probability_adjustment = "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
+    else:
+        probability_adjustment = "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
+        },
+        {
+            "role": "user",
+             "content": f"""Current game state: 
+            Player tribe: {game_state.to_context_string()}
+
+Recent History:
+{recent_history}
+
+Last situation: 
+{game_state.old_situation} 
+    
+The player chose the following action: {game_state.chosen_action.caption}
+{game_state.chosen_action.description}
+
+The outcome of this action was:
+{last_action}
+
+Based on this information, create a follow up on this event. Add this follow up to:
+{game_state.situation} 
+while slightly summarizing it and save it in "situation".
+
+Then present three possible actions the player can take next, possibly utilizing one or more of the tribes characters. {tier_specific_prompt}
+Keep these choices thematically close to the last action.
 Include potential consequences and strategic considerations for each action.
 {probability_adjustment}
 Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
@@ -849,7 +926,7 @@ Output your response as a JSON object matching the QuestInfo schema.
         current_part=1
     )
     game_state.add_quest(new_quest)
-    game_state.quest_description = quest_info.description
+    game_state.situation = quest_info.description
     next_choices = NextChoices(choices=quest_info.part_1_choices)
     if next_choices:
         print("\n=== Available Actions ===")
@@ -912,17 +989,13 @@ Possibly include a reaction of one of the allied or enemy tribes. The reaction s
     return choices
 
 
-def generate_new_game_state(game_state: GameState, chosen_action: ActionChoice,
-                            outcome: OutcomeType) -> GameStateUpdate:
-    llm_specific = ""
-    if config.LLM_PROVIDER == LLMProvider.ANTHROPIC:
-        llm_specific ="keep your answer short for event_result"
+def generate_new_game_state(game_state: GameState) -> GameStateUpdate:
     recent_history = game_state.get_recent_history(num_events=5)
     current_quest = game_state.current_quest
     if current_quest:
-        quest_update = "5. Update the quest description in quest_description"
+        quest_update = "5. Update the quest description in situation"
     else:
-        quest_update = "5. Update the current situation in quest_description"
+        quest_update = "5. Update the current situation in situation"
     messages = [
         {
             "role": "system",
@@ -930,22 +1003,25 @@ def generate_new_game_state(game_state: GameState, chosen_action: ActionChoice,
         },
         {
             "role": "user",
-            "content": f"""
-Current game state:
-{game_state.to_context_string()}
-The tribes development is {game_state.tribe.development}, its diplomatic stance is {game_state.tribe.stance}.
+            "content": f"""Current game state: 
+            Player tribe: {game_state.to_context_string()}
+The tribes development is {game_state.tribe.development.value}, its diplomatic stance is {game_state.tribe.stance.value}.
 Change this only for major upheavals!
 
 Recent History:
 {recent_history}
 
-The player chose the following action:
-{chosen_action.caption}
-{chosen_action.description}
+The old situation was: 
+{game_state.old_situation}
+The player chose the following action as response: {game_state.chosen_action.caption}
+{game_state.chosen_action.description}
 
-The outcome of this action was {outcome.name}.
+The outcome of this action was {game_state.last_outcome.name}.
 
-Please provide an updated game state, including:
+Please provide an updated game state given the chosen action and its outcome.
+But keep in mind that the event does not need to be completely finished with the given outcome.
+In fact, most events take multiple turns to complete.
+Include the following in the updated game state:
 1. Any changes to the tribe's name, description, and its leaders. Alliances, Royal marriages, won or lost wars and so on do change the tribe's name, the leader title, or even the leaders name!
 But do not change the tribe's name every turn, only when important event have happened.
 You can also add new leaders, for example heroes, generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
@@ -959,7 +1035,8 @@ You can also add new leaders, for example heroes, generals, mages, shamans, and 
 {quest_update}
 At last, add a description of what happened and its outcome in your role as game master in event_result.
 Do not talk about Power level and Tier in event_result, instead focus on telling the story of the event.
-{llm_specific}
+keep your answer focused for event_result, 2 or 3 paragraphs. Remember that the event does not need to be finished with this action. 
+Include interpersonal relation changes, good and bad, between tribe and foreign characters.
 
 Be creative but consistent with the current game state, active quests, and the chosen action.
 """
@@ -984,7 +1061,9 @@ def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
 
 
 def decide_event_type() -> str:
-    return random.choices(["single_event", "reaction", "new_quest"], weights=[0.5, 0.3, 0.2], k=1)[0]
+    #return random.choices(["single_event", "reaction", "new_quest"], weights=[0.5, 0.3, 0.2], k=1)[0]
+    return random.choices(["single_event", "reaction", "followup"], weights=[0.2, 0.4, 0.4], k=1)[0]
+    #return "followup"
 
 
 def save_game(game_state: GameState, filename: str):
@@ -1050,7 +1129,7 @@ def create_gui():
             # Update all necessary GUI elements
             tribe_overview = current_game_state.to_context_string()
             recent_history = current_game_state.get_recent_history(num_events=1000, full_output=False)
-            current_situation = current_game_state.quest_description
+            current_situation = current_game_state.situation
 
             action_updates = []
             choices = current_action_choices.choices if current_action_choices else []
@@ -1093,7 +1172,7 @@ def create_gui():
 
         tribe_overview = current_game_state.to_context_string()
         recent_history = current_game_state.get_recent_history(num_events=1000, full_output=False)
-        current_situation = current_game_state.quest_description
+        current_situation = current_game_state.situation
 
         if current_action_choices is not None:
             choices = current_action_choices.choices
@@ -1121,21 +1200,24 @@ def create_gui():
     def perform_action(action_index):
         global current_game_state, current_action_choices
 
+        current_game_state.old_situation = current_game_state.situation
         chosen_action = current_action_choices.choices[action_index]
+        current_game_state.chosen_action = chosen_action
+
         action_captions = [choice.caption for choice in current_action_choices.choices]
         current_game_state.add_action_set(action_captions)
 
         outcome, roll = determine_outcome(chosen_action.probability)
+        current_game_state.last_outcome = outcome  # Store the last outcome
         print(f"Debug: Roll = {roll:.2f}, Probability = {chosen_action.probability:.2f}")
 
-        new_state = generate_new_game_state(current_game_state, chosen_action, outcome)
+        new_state = generate_new_game_state(current_game_state)
 
         # Check if new tier
         if new_state.tier > current_game_state.tier:
             print(f"Tier up! From {current_game_state.tier} to {new_state.tier}")
 
         current_game_state.update(new_state, outcome)
-        current_game_state.last_outcome = outcome  # Store the last outcome
 
         if current_game_state.current_quest and current_game_state.current_quest.current_part <= current_game_state.current_quest.total_parts:
             # Continue the current quest
@@ -1148,7 +1230,11 @@ def create_gui():
                 print(f"New Quest: {current_game_state.current_quest.name}")
             elif event_type == "reaction":
                 reaction = generate_next_reaction_choices(current_game_state)
-                current_game_state.quest_description = reaction.situation
+                current_game_state.situation = reaction.situation
+                current_action_choices = NextChoices(choices=reaction.choices)
+            elif event_type == "followup":
+                reaction = generate_next_follow_choices(current_game_state)
+                current_game_state.situation = reaction.situation
                 current_action_choices = NextChoices(choices=reaction.choices)
             else: # single_event
                 current_action_choices = generate_next_choices(current_game_state)
@@ -1184,6 +1270,7 @@ def create_gui():
                 current_game_state = GameState.initialize(chosen_tribe, leader)
                 current_action_choices = generate_next_choices(current_game_state)
                 current_game_state.current_action_choices = current_action_choices
+                current_game_state.situation = "Humble beginnings of the " + chosen_tribe.name
 
                 history.append(current_game_state.model_dump())
                 save_all_game_states(history, "History.json")

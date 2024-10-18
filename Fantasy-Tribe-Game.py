@@ -31,6 +31,7 @@ import json
 import os
 import random
 import textwrap
+import copy
 from enum import Enum
 from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
 
@@ -51,7 +52,6 @@ except KeyError:
     openAIKey = ""
 
 T = TypeVar('T', bound=BaseModel)
-
 
 class LLMProvider(Enum):
     LOCAL = "local"
@@ -79,6 +79,17 @@ def as_enum(d):
         name, member = d["__enum__"].split(".")
         return getattr(globals()[name], member)
     return d
+
+def convert_enums(data):
+    if isinstance(data, dict):
+        if "__enum__" in data:
+            enum_str = data["__enum__"]
+            enum_class, enum_value = enum_str.split(".")
+            return getattr(globals()[enum_class], enum_value)
+        return {k: convert_enums(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [convert_enums(item) for item in data]
+    return data
 
 
 def create_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
@@ -211,35 +222,13 @@ class NextReactionChoices(BaseModel):
     situation: str
 
 
-class Quest(BaseModel):
-    name: str
-    description: str
-    total_parts: int
-    current_part: int = 1
-    state: str = "active"
-
-    def advance_part(self):
-        if self.current_part < self.total_parts:
-            self.current_part += 1
-        else:
-            self.state = "completed"
-
-
-class QuestInfo(BaseModel):
-    name: str
-    description: str
-    total_parts: int
-    part_1_choices: List[ActionChoice]
-
-
 class Character(BaseModel):
-    Name: str
-    Title: str
+    name: str
+    title: str
+    relationships: Optional[List[Dict[str, Any]]] = Field(default=None)
 
-class ForeignCharacter(BaseModel):
-    Name: str
-    Title: str
-    Tribe: str
+class ForeignCharacter(Character):
+    tribe: str
 
 class DiplomaticStance(Enum):
     PEACEFUL = "peaceful"
@@ -266,41 +255,31 @@ class GameStateBase(BaseModel):
     leaders: List[Character]
     gold: int
     allies: List[str]
+    neutrals: List[str]
     enemies: List[str]
     foreign_characters: List[ForeignCharacter]
     territory_size: int
     power_level: int
     tier: int
     situation: str
-    old_situation: str
-
-
-class GameStateUpdate(GameStateBase):
     event_result: str
 
 
+def format_relationship_strength(strength):
+    """Format relationship strength with consistent spacing."""
+    return f"+{strength:2d}" if strength >= 0 else f"{strength:3d}"
+
+
 class GameState(GameStateBase):
-    history: List[Dict[str, Any]] = Field(default_factory=list)
+    previous_situation: Optional[str] = None
     current_action_choices: Optional[NextChoices] = None
     last_action_sets: List[List[str]] = Field(default_factory=list)
     chosen_action: ActionChoice = None
     last_outcome: Optional[OutcomeType] = None
-    current_quest: Optional[Quest] = None
     turn: int = 1
 
     class Config:
         arbitrary_types_allowed = True
-
-    def add_quest(self, quest: Quest):
-        self.current_quest = quest
-
-    def add_event(self, event_type: str, description: str, outcome: OutcomeType):
-        self.history.append({
-            "event_type": event_type,
-            "description": description,
-            "outcome": outcome.value,
-            "turn": self.turn
-        })
 
     def add_action_set(self, actions: List[str]):
         self.last_action_sets.append(actions)
@@ -308,44 +287,103 @@ class GameState(GameStateBase):
             self.last_action_sets.pop(0)
 
     def to_context_string(self) -> str:
+        # Helper function to format relationships consistently
+        def format_relationships(relationships):
+            if not relationships:
+                return ""
+            formatted_rels = []
+            for rel in relationships:
+                if len(rel) > 0:
+                    strength = format_relationship_strength(rel["strength"])
+                    formatted_rels.append(f"    ◦ {rel['target']}: {rel['description']} [{strength}]")
+            return "\n".join(formatted_rels)
+
+        # Group characters by tribe and alignment
+        tribe_groups = {
+            'Allies': {},
+            'Neutrals': {},
+            'Enemies': {}
+        }
+
+        # Sort characters into their respective tribes and alignment groups
+        for char in self.foreign_characters:
+            if char.tribe in self.allies:
+                alignment = 'Allies'
+            elif char.tribe in self.neutrals:
+                alignment = 'Neutrals'
+            elif char.tribe in self.enemies:
+                alignment = 'Enemies'
+            else:
+                continue  # Skip if tribe alignment is unknown
+
+            if char.tribe not in tribe_groups[alignment]:
+                tribe_groups[alignment][char.tribe] = []
+            tribe_groups[alignment][char.tribe].append(char)
+
+        # Start building the text output
         tribe_type = get_tribe_orientation(self.tribe.development, self.tribe.stance)
         text = f"""{self.tribe.name}
-{tribe_type}
+  {tribe_type}
 
 {self.tribe.description}
 
-Leader:"""
+Leaders:"""
+
+        # Format all leaders with consistent formatting
         for leader in self.leaders:
-            text += f"""\n    {leader.Title}: {leader.Name}"""
-        text += f"""\n
+            text += f"\n  • {leader.title}: {leader.name}"  # Changed hyphen to colon for consistency
+            if leader.relationships:
+                text += "\n  Relations:"
+                text += "\n" + format_relationships(leader.relationships)
+
+        # Format each alignment section with tribes and their characters
+        for alignment in ['Allies', 'Neutrals', 'Enemies']:
+            text += f"\n\n{alignment}:"
+            # First list all tribes in this alignment category
+            tribes_in_category = sorted(set(self.allies if alignment == 'Allies'
+                                            else self.neutrals if alignment == 'Neutrals'
+            else self.enemies))
+            #text += f" {', '.join(tribes_in_category)}"
+
+            # Then list characters grouped by their tribes
+            for tribe in sorted(tribe_groups[alignment].keys()):
+                text += f"\n  {tribe}:"
+                for char in sorted(tribe_groups[alignment][tribe], key=lambda x: x.name):
+                    text += f"\n  • {char.title}: {char.name}"
+                    if char.relationships:
+                        text += "\n  Relations:"
+                        text += "\n" + format_relationships(char.relationships)
+
+        # Add basic tribe information
+        text += f"""
+
 Gold: {self.gold}
-Allies: {', '.join(self.allies)}
-Enemies: {', '.join(self.enemies)}
-Other Characters:"""
-        for char in self.foreign_characters:
-            text += f"""\n    {char.Title}: {char.Name} from tribe {char.Tribe}"""
-        text += f"""\n
 Territory Size: {self.territory_size}
 Power Level: {self.power_level}
 Tribe Tier: {self.tier}"""
+
         return text
 
-    def get_recent_history(self, num_events: int = 5, full_output: bool = True, start_event: int = 1) -> str:
+    @staticmethod
+    def get_recent_history(num_events: int = 5, full_output: bool = True,
+                           start_event: int = 1) -> str:
+        global history
         # Calculate the starting index from the end
         start_idx = start_event + num_events - 1
 
         # Get the slice of events we want, in reverse order
-        recent_events = self.history[-start_idx:-start_event + 1 if start_event > 1 else None][-num_events:]
+        recent_events = history[-start_idx:-start_event + 1 if start_event > 1 else None][-num_events:]
         if full_output:
-            return "\n\n".join([f"- {event['description']} (Outcome: {OutcomeType(event['outcome']).name})"
-                                for event in recent_events])
+            return "\n\n".join([
+                                   f"- {event.event_result} (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
+                                   for event in recent_events])
         else:
             # Reverse the events and include turn numbers
             recent_events.reverse()
             formatted_events = []
             for event in recent_events:
-                turn_header = f"=== Turn {event['turn']} ==="
-                formatted_events.extend([turn_header, event['description']])
+                turn_header = f"=== Turn {event.turn} ==="
+                formatted_events.extend([turn_header, event.event_result])
             return "\n\n".join(formatted_events)
 
     @classmethod
@@ -355,32 +393,38 @@ Tribe Tier: {self.tier}"""
             leaders=[leader, ],
             gold=100,
             allies=[],
+            neutrals=[],
             enemies=[],
             foreign_characters=[],
             territory_size=10,
             power_level=5,
             tier=1,
             situation="",
-            old_situation=""
+            event_result=""
         )
 
-    def update(self, new_state: GameStateUpdate, outcome: OutcomeType):
+    def update(self, new_state: GameStateBase):
         for field in GameStateBase.model_fields:
             setattr(self, field, getattr(new_state, field))
-        self.add_event("Action", new_state.event_result, outcome)
-        self.turn += 1
-        # Update quest progress if there's a current quest
-        if self.current_quest:
-            if outcome == OutcomeType.POSITIVE:
-                self.current_quest.current_part += 1
-                if self.current_quest.current_part > self.current_quest.total_parts:
-                    self.current_quest.state = "completed"
-                    print(f"Quest '{self.current_quest.name}' completed!")
-                    self.current_quest = None
 
+def load_game_state(filename) -> tuple[List[GameState], GameState]:
+    with open(filename, 'r') as f:
+        loaded_history = json.load(f)
+
+    # Convert enum dictionaries to actual enum values
+    converted_history = convert_enums(loaded_history)
+
+    # Convert each history entry to a GameState object
+    history: List[GameState] = [GameState(**state) for state in converted_history]
+
+    # The current game state is the last item in the history
+    current_game_state = history[-1]
+
+    return history, current_game_state
 
 current_game_state: Optional[GameState] = None
-history: List[dict] = []
+global history
+history: List[GameState] = []
 
 
 def generate_tribe_choices() -> InitialChoices:
@@ -404,7 +448,7 @@ def generate_tribe_choices() -> InitialChoices:
     messages = [
         {
             "role": "system",
-            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
+            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
         },
         {
             "role": "user",
@@ -429,7 +473,7 @@ For each tribe provide:
         }
     ]
 
-    choices = make_api_call(messages, InitialChoices)
+    choices = make_api_call(messages, InitialChoices, max_tokens=2000)
 
     if choices:
         print("\n=== Available Tribe Choices ===")
@@ -441,19 +485,21 @@ For each tribe provide:
 
     return choices
 
-def get_leader(chosen_tribe) -> Character:
+def get_leader(chosen_tribe: TribeChoice) -> Character:
     messages = [
         {
             "role": "system",
-            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
+            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
         },
         {
             "role": "user",
-            "content": f"""Give me the name and title for the leader of {chosen_tribe}."""
+            "content": f"""Give me the name and title for the leader of {chosen_tribe.name}. Their description is:
+{chosen_tribe.description}
+You can leave the field relationships empty."""
         }
     ]
 
-    leader = make_api_call(messages, Character)
+    leader = make_api_call(messages, Character, max_tokens=2000)
 
     if leader:
         print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
@@ -743,7 +789,11 @@ def generate_next_choices(game_state: GameState) ->NextChoices:
 Recent History:
 {recent_history}
 
-Based on this information, present three possible actions I can take next, possibly utilizing one or more of the tribes characters. {tier_specific_prompt} 
+Based on this information, create a new event. Add the even description to:
+{game_state.situation} 
+while slightly summarizing it and save it in "situation".
+
+Then present three possible actions the player can take next, possibly utilizing one or more of the tribes characters. {tier_specific_prompt} 
 Include potential consequences and strategic considerations for each action.
 {probability_adjustment}
 Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
@@ -764,21 +814,39 @@ Be creative, do not repeat these old choices:
 
     return next_choices
 
-def generate_next_reaction_choices(game_state: GameState) -> NextReactionChoices:
-    #tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
-
+def generate_choices(game_state: GameState, choice_type: str) -> NextReactionChoices:
     recent_history = game_state.get_recent_history(num_events=5, start_event=2)
-    last_action = game_state.get_recent_history(num_events=1)
+    probability_adjustment = get_probability_adjustment(game_state.last_outcome)
+    tier_specific_prompt = ""
 
-    if game_state.last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
-        probability_adjustment = "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
+    if game_state.chosen_action:
+        action_context = f"""The player chose the following action: {game_state.chosen_action.caption}
+{game_state.chosen_action.description}
+
+The outcome of this action was:
+{game_state.event_result}"""
     else:
-        probability_adjustment = "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
+        action_context = ""
+    action_instruction = ""
+    additional_instructions = ""
+
+    if choice_type == "single_event":
+        action_instruction = "create a new event. Add the event description to:"
+        tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development,
+                                                        game_state.tribe.stance)
+    elif choice_type == "reaction":
+        action_instruction = "create a reaction to this last outcome. Add this reaction to:"
+        additional_instructions = "The reaction should include one of the foreign characters of the foreign tribe."
+    elif choice_type == "followup":
+        action_instruction = "create a follow up to this last outcome. Add this follow up to:"
+        additional_instructions = "Keep these choices thematically close to the last action."
+    else:
+        raise ValueError(f"Invalid choice type: {choice_type}")
 
     messages = [
         {
             "role": "system",
-            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
+            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
         },
         {
             "role": "user",
@@ -789,83 +857,20 @@ Recent History:
 {recent_history}
 
 Last situation: 
-{game_state.old_situation} 
-    
-The player chose the following action: {game_state.chosen_action.caption}
-{game_state.chosen_action.description}
+{game_state.previous_situation} 
 
-The outcome of this action was:
-{last_action}
+{action_context}
 
-Based on this information, create a reaction to this event. Add this follow up to:
-{game_state.situation} 
-while slightly summarizing it and save it in "situation".
-
-The reaction should include one of the foreign characters of the foreign tribe.
-Then present three possible actions I can take next, possibly utilizing one or more of the tribes characters.  
-Include potential consequences and strategic considerations for each action.
-{probability_adjustment}
-Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
-but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. 
-"""
-        }
-    ]
-
-    next_choices = make_api_call(messages, NextReactionChoices, max_tokens=2000)
-    if next_choices:
-        print("\n=== Available Actions ===")
-        for i, choice in enumerate(next_choices.choices, 1):
-            print(f"\n{i}. {choice.caption}")
-            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
-                                subsequent_indent="   "))
-            print(f"   Probability of Success: {choice.probability:.2f}")
-
-    return next_choices
-
-def generate_next_follow_choices(game_state: GameState) -> NextReactionChoices:
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
-
-    recent_history = game_state.get_recent_history(num_events=5, start_event=2)
-    last_action = game_state.get_recent_history(num_events=1)
-
-    if game_state.last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
-        probability_adjustment = "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
-    else:
-        probability_adjustment = "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game, where I rule over a tribe in a fantasy based setting. Output your answers as JSON"
-        },
-        {
-            "role": "user",
-             "content": f"""Current game state: 
-            Player tribe: {game_state.to_context_string()}
-
-Recent History:
-{recent_history}
-
-Last situation: 
-{game_state.old_situation} 
-    
-The player chose the following action: {game_state.chosen_action.caption}
-{game_state.chosen_action.description}
-
-The outcome of this action was:
-{last_action}
-
-Based on this information, create a follow up on this event. Add this follow up to:
+Based on this information, {action_instruction}
 {game_state.situation} 
 while slightly summarizing it and save it in "situation".
 
 Then present three possible actions the player can take next, possibly utilizing one or more of the tribes characters. {tier_specific_prompt}
-Keep these choices thematically close to the last action.
+{additional_instructions}
 Include potential consequences and strategic considerations for each action.
 {probability_adjustment}
 Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
-but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. 
-"""
+but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. """
         }
     ]
 
@@ -877,125 +882,18 @@ but do not automatically give the aggressive options a low probability. Instead,
             print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
                                 subsequent_indent="   "))
             print(f"   Probability of Success: {choice.probability:.2f}")
-
     return next_choices
 
+def get_probability_adjustment(last_outcome: OutcomeType) -> str:
+    if last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
+        return "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
+    return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
 
-def generate_new_quest(game_state: GameState) -> NextChoices:
+
+
+def generate_new_game_state(game_state: GameState) -> GameStateBase:
     recent_history = game_state.get_recent_history(num_events=5)
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
 
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game. Generate a new multi-part quest for the tribe."
-        },
-        {
-            "role": "user",
-            "content": f"""
-Current game state:
-{game_state.to_context_string()}
-
-Recent History:
-{recent_history}
-
-Generate a new multi-part quest for the tribe. The quest should be interesting and relevant to the tribe's current situation. {tier_specific_prompt}
-
-Provide the following information:
-1. A quest name
-2. A brief overall description of the quest
-3. The total number of parts for this quest (between 2 and 5)
-4. Three possible approaches to start the quest (part 1), each with:
-   a. A brief caption
-   b. A detailed description
-   c. A probability of success (between 0.5 and 0.8)
-
-Be creative and consider the current game state, recent history, and resources available to the player.
-
-Output your response as a JSON object matching the QuestInfo schema.
-"""
-        }
-    ]
-
-    quest_info = make_api_call(messages, QuestInfo, max_tokens=2000)
-    print(textwrap.fill(f"{quest_info}", width=80))
-    new_quest = Quest(
-        name=quest_info.name,
-        description=quest_info.description,
-        total_parts=quest_info.total_parts,
-        current_part=1
-    )
-    game_state.add_quest(new_quest)
-    game_state.situation = quest_info.description
-    next_choices = NextChoices(choices=quest_info.part_1_choices)
-    if next_choices:
-        print("\n=== Available Actions ===")
-        for i, choice in enumerate(next_choices.choices, 1):
-            print(f"\n{i}. {choice.caption}")
-            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
-                                subsequent_indent="   "))
-            print(f"   Probability of Success: {choice.probability:.2f}")
-
-    return next_choices
-
-
-def generate_next_quest_part(game_state: GameState) -> NextChoices:
-    current_quest = game_state.current_quest
-    recent_history = game_state.get_recent_history(num_events=5)
-    tier_specific_prompt = get_tier_specific_prompt(game_state.tier, game_state.tribe.development, game_state.tribe.stance)
-    if current_quest.current_part == current_quest.total_parts:
-        final_quest = "This is the final part, make the choices epic and exciting"
-    else:
-        final_quest = ""
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game. Generate the next part of an ongoing quest for the tribe."
-        },
-        {
-            "role": "user",
-            "content": f"""
-Current game state:
-{game_state.to_context_string()}
-
-Recent History:
-{recent_history}
-
-Current Quest: {current_quest.name}
-Quest Description: {current_quest.description}
-
-Generate the next part of this quest with three possible approaches to complete this part. This should be part {current_quest.current_part} of {current_quest.total_parts} of the ongoing quest. The choices should be consistent with the quest's overall narrative and the tribe's current situation.
-{tier_specific_prompt}
-For each approach, provide:
-1. A brief caption
-2. A detailed description
-3. A probability of success (between 0.5 and 0.8)
-
-Be creative and consider the current game state, the quest's progress so far, recent history, and resources available to the player. Utilize the tribes leaders.
-Possibly include a reaction of one of the allied or enemy tribes. The reaction should include one of the foreign characters of the foreign tribe.
-{final_quest}
-"""
-        }
-    ]
-
-    choices = make_api_call(messages, NextChoices, max_tokens=2000)
-    if choices:
-        print("\n=== Available Actions ===")
-        for i, choice in enumerate(choices.choices, 1):
-            print(f"\n{i}. {choice.caption}")
-            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
-                                subsequent_indent="   "))
-            print(f"   Probability of Success: {choice.probability:.2f}")
-    return choices
-
-
-def generate_new_game_state(game_state: GameState) -> GameStateUpdate:
-    recent_history = game_state.get_recent_history(num_events=5)
-    current_quest = game_state.current_quest
-    if current_quest:
-        quest_update = "5. Update the quest description in situation"
-    else:
-        quest_update = "5. Update the current situation in situation"
     messages = [
         {
             "role": "system",
@@ -1012,7 +910,7 @@ Recent History:
 {recent_history}
 
 The old situation was: 
-{game_state.old_situation}
+{game_state.previous_situation}
 The player chose the following action as response: {game_state.chosen_action.caption}
 {game_state.chosen_action.description}
 
@@ -1026,24 +924,33 @@ Include the following in the updated game state:
 But do not change the tribe's name every turn, only when important event have happened.
 You can also add new leaders, for example heroes, generals, mages, shamans, and so on. But keep the number limited to a max of 5. You can also drop leaders not necessary anymore.
 2. Updated gold values. Tier 1 should be between 0 and 200 gold, Tier 2 between 100 and 1000, Tier 3 between 1000 and 10000, and in Tier 4 gold should be over 10000.
-3. Any new allies or enemies, and their leaders and heroes. Keep these foreign characters also at max of 5. 
+3. Any new allies, neutrals or enemies, and their leaders and heroes. Keep these foreign characters also at max of 5.
+It takes many turns to move neutral factions to become allies, and even more to form formal alliances! 
 4. Changes to territory size, power level and the current tier. 
     Tier 1 is local issues and basic survival, power level 1-15, power level may rise 1 or 2 points
     Tier 2 is regional influence and early empire-building, power level 16-40, power level may rise 2-5 points
     Tier 3 is nation-building and complex diplomacy, power level 41-75, power level may rise 2-10 points
     Tier 4 is world-shaping decisions and legendary quests, power level > 75, power level may rise 10+ points
-{quest_update}
-At last, add a description of what happened and its outcome in your role as game master in event_result.
+5. Update the current situation in situation
+6. Add a description of what happened and its outcome in your role as game master in event_result.
 Do not talk about Power level and Tier in event_result, instead focus on telling the story of the event.
-keep your answer focused for event_result, 2 or 3 paragraphs. Remember that the event does not need to be finished with this action. 
-Include interpersonal relation changes, good and bad, between tribe and foreign characters.
+Keep your answer focused for event_result, 2 or 3 paragraphs. Remember that the event does not need to be finished with this action. 
+7. Please update the relationships between the leaders based on these events. You can:
+- Modify existing relationship descriptions and strengths
+- Add new relationships
+- Remove relationships that are no longer relevant
 
-Be creative but consistent with the current game state, active quests, and the chosen action.
+Remember:
+- Strength ranges from -100 (bitter enemies) to 100 (strongest allies)
+- Each relationship should have a "target", "description", and "strength"
+- Consider how relationships might be reciprocal
+
+Be creative but consistent with the current game state, and the chosen action.
 """
         }
     ]
 
-    new_state = make_api_call(messages, GameStateUpdate, max_tokens=2000)
+    new_state = make_api_call(messages, GameStateBase, max_tokens=2000)
     print(textwrap.fill(f"{new_state}", width=80))
     return new_state
 
@@ -1061,25 +968,34 @@ def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
 
 
 def decide_event_type() -> str:
-    #return random.choices(["single_event", "reaction", "new_quest"], weights=[0.5, 0.3, 0.2], k=1)[0]
     return random.choices(["single_event", "reaction", "followup"], weights=[0.2, 0.4, 0.4], k=1)[0]
     #return "followup"
 
 
-def save_game(game_state: GameState, filename: str):
+
+def write_story_history(history: List[GameState], filename: str):
+    story = []
+    for state in history:
+        story.append(f"=== Turn {state.turn} ===")
+
+        story.append(f"Situation: {state.previous_situation}")
+
+        story.append(f"Taken action: {state.chosen_action.description}")
+
+        outcome = OutcomeType(state.last_outcome).name
+        story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
+
     with open(filename, 'w') as f:
-        f.write(json.dumps(game_state.model_dump(), cls=EnumEncoder))
+        f.write("\n".join(story))
 
 
-def save_all_game_states(all_game_states: list, filename: str):
+def save_all_game_states(filename: str):
+    global history
     with open(filename, 'w') as f:
-        f.write(json.dumps(all_game_states, cls=EnumEncoder))
+        json.dump(history, f, cls=EnumEncoder)
 
-
-def load_game(filename: str) -> GameState:
-    with open(filename, 'r') as f:
-        data = json.loads(f.read(), object_hook=as_enum)
-    return GameState.model_validate(data)
+    # Also write the story version
+    write_story_history(history, filename.replace('.json', '_story.txt'))
 
 
 def create_gui():
@@ -1115,15 +1031,14 @@ def create_gui():
             return f"Error saving settings: {str(e)}"
 
     def save_current_game():
-        if current_game_state:
-            save_game(current_game_state, "saved_game.json")
-            return "Game saved successfully!"
-        return "No game in progress to save."
+        global history
+        save_all_game_states('test.json')
+        return "Game saved successfully!"
 
     def load_saved_game():
-        global current_game_state, current_action_choices
+        global current_game_state, current_action_choices, history
         try:
-            current_game_state = load_game("saved_game.json")
+            history, current_game_state = load_game_state("History.json")
             current_action_choices = current_game_state.current_action_choices
 
             # Update all necessary GUI elements
@@ -1143,6 +1058,7 @@ def create_gui():
                 else:
                     action_updates.extend([gr.update(visible=False), gr.update(visible=False)])
 
+            current_game_state.turn += 1
             return (
                 "Game loaded successfully!",
                 gr.update(visible=False),  # Hide tribe selection group
@@ -1160,7 +1076,6 @@ def create_gui():
                 gr.update(visible=False),  # Keep current situation hidden
                 *[gr.update(visible=False)] * 6
             )
-
     def update_game_display():
         if not current_game_state:
             return (
@@ -1198,9 +1113,9 @@ def create_gui():
         )
 
     def perform_action(action_index):
-        global current_game_state, current_action_choices
+        global current_game_state, current_action_choices, history
 
-        current_game_state.old_situation = current_game_state.situation
+        current_game_state.previous_situation = current_game_state.situation
         chosen_action = current_action_choices.choices[action_index]
         current_game_state.chosen_action = chosen_action
 
@@ -1217,31 +1132,24 @@ def create_gui():
         if new_state.tier > current_game_state.tier:
             print(f"Tier up! From {current_game_state.tier} to {new_state.tier}")
 
-        current_game_state.update(new_state, outcome)
+        current_game_state.update(new_state)
+        # Make a deep copy of the current game state before appending
+        deep_copy_state = copy.deepcopy(current_game_state)
+        # Append the deep copy to the history
+        history.append(deep_copy_state)
+        save_all_game_states("History.json")
+        current_game_state.turn += 1
 
-        if current_game_state.current_quest and current_game_state.current_quest.current_part <= current_game_state.current_quest.total_parts:
-            # Continue the current quest
-            current_action_choices = generate_next_quest_part(current_game_state)
-        else:
-            event_type = decide_event_type()
-            print(f"Event type: {event_type}")
-            if event_type == "new_quest":
-                current_action_choices = generate_new_quest(current_game_state)
-                print(f"New Quest: {current_game_state.current_quest.name}")
-            elif event_type == "reaction":
-                reaction = generate_next_reaction_choices(current_game_state)
-                current_game_state.situation = reaction.situation
-                current_action_choices = NextChoices(choices=reaction.choices)
-            elif event_type == "followup":
-                reaction = generate_next_follow_choices(current_game_state)
-                current_game_state.situation = reaction.situation
-                current_action_choices = NextChoices(choices=reaction.choices)
-            else: # single_event
-                current_action_choices = generate_next_choices(current_game_state)
+        event_type = decide_event_type()
+        print(f"Event type: {event_type}")
+        choices = generate_choices(current_game_state, event_type)
+
+        current_game_state.situation = choices.situation
+        current_action_choices = NextChoices(choices=choices.choices)
+
 
         current_game_state.current_action_choices = current_action_choices
-        history.append(current_game_state.model_dump())
-        save_all_game_states(history, "History.json")
+
 
         return update_game_display()
 
@@ -1268,12 +1176,13 @@ def create_gui():
             if chosen_tribe:
                 leader = get_leader(chosen_tribe)
                 current_game_state = GameState.initialize(chosen_tribe, leader)
-                current_action_choices = generate_next_choices(current_game_state)
-                current_game_state.current_action_choices = current_action_choices
-                current_game_state.situation = "Humble beginnings of the " + chosen_tribe.name
+                current_game_state.previous_situation = "Humble beginnings of the " + chosen_tribe.name
 
-                history.append(current_game_state.model_dump())
-                save_all_game_states(history, "History.json")
+                choices = generate_choices(current_game_state, "single_event")
+
+                current_game_state.situation = choices.situation
+                current_action_choices = NextChoices(choices=choices.choices)
+                current_game_state.current_action_choices = current_action_choices
 
                 # Unpack the return values from update_game_display
                 tribe_overview, recent_history, current_situation, *action_updates = update_game_display()

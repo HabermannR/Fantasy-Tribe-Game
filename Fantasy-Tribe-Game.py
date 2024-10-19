@@ -64,7 +64,7 @@ class LLMProvider(Enum):
 
 
 class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.LOCAL
+    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC
     openai_model: str = "gpt-4o-mini"
     local_url: str = "http://127.0.0.1:1234/v1"
 
@@ -674,6 +674,7 @@ Required Updates:
      * Name and description (do not put the tribe name in the description)
      * Development type and stance
      * Leaders (maximum 2 per tribe) and their relationships
+     {tribes_prompt}
    - Remember that diplomatic changes take time:
      * Multiple turns to move from NEUTRAL to ALLY
      * Even longer to form formal alliances

@@ -28,45 +28,19 @@ SOFTWARE.
 """
 
 import json
-import os
+
 import random
 import textwrap
 import copy
-from collections import defaultdict
-from difflib import SequenceMatcher
+
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Any, TypeVar, Type, List, Tuple, Optional
+from typing import List, Tuple, Optional
 
-import anthropic
 import gradio as gr
-from openai import OpenAI
+
 from pydantic import BaseModel, Field
-
-try:
-    anthropicKey = os.environ["ANTHROPIC_API_KEY"]
-except KeyError:
-    print("ANTHROPIC_API_KEY not found in environment variables")
-    anthropicKey = ""
-try:
-    openAIKey = os.environ.get("OPENAI_API_KEY")
-except KeyError:
-    print("OPENAI_API_KEY not found in environment variables")
-    openAIKey = ""
-
-T = TypeVar('T', bound=BaseModel)
-
-
-class LLMProvider(Enum):
-    LOCAL = "local"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-
-
-class Config:
-    LLM_PROVIDER: LLMProvider = LLMProvider.ANTHROPIC
-    openai_model: str = "gpt-4o-mini"
-    local_url: str = "http://127.0.0.1:1234/v1"
+from LLM_manager import LLMContext, Config, LLMProvider
 
 
 class EnumEncoder(json.JSONEncoder):
@@ -74,15 +48,8 @@ class EnumEncoder(json.JSONEncoder):
         if isinstance(obj, Enum):
             return {"__enum__": str(obj)}
         if isinstance(obj, BaseModel):
-            return obj.model_dump()
+            return obj.model_dump(exclude_unset=True)
         return json.JSONEncoder.default(self, obj)
-
-
-def as_enum(d):
-    if "__enum__" in d:
-        name, member = d["__enum__"].split(".")
-        return getattr(globals()[name], member)
-    return d
 
 
 def convert_enums(data):
@@ -97,124 +64,17 @@ def convert_enums(data):
     return data
 
 
-def create_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
-    """Create a JSON schema from a Pydantic model."""
-    schema = model.model_json_schema()
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "schema": schema
-        }
-    }
-
-
-class LLMStrategy:
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 500) -> T:
-        raise NotImplementedError
-
-
-class AnthropicStrategy(LLMStrategy):
-    def __init__(self):
-        self.client = anthropic.Anthropic(
-            api_key=anthropicKey)
-        self.model = "claude-3-5-sonnet-20240620"
-
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) \
-            -> Type[T] | None:
-        try:
-            tool_schema = create_json_schema(response_model)
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=messages[0]['content'] + " do not use the word Nexus",
-                # Use the content of the first message as the system message
-                messages=messages[1:],  # Use the remaining messages, excluding the first one
-                tools=[{
-                    "name": "Tribe_Game",
-                    "description": "Fill in game structures using well-structured JSON.",
-                    "input_schema": tool_schema['json_schema']['schema']
-                }],
-                tool_choice={"type": "tool", "name": "Tribe_Game"}
-            )
-            return response_model.model_validate(response.content[0].input)
-        except Exception as e:
-            raise RuntimeError(f"Anthropic API call failed: {str(e)}")
-
-
-class OpenAIStrategy(LLMStrategy):
-    def __init__(self):
-        self.client = OpenAI(api_key=openAIKey)
-        self.model = config.openai_model
-
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T],
-                      max_tokens: int = 1500) -> Any | None:
-        try:
-            completion = self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=messages,
-                response_format=response_model,
-            )
-            return completion.choices[0].message.parsed
-        except Exception as e:
-            raise RuntimeError(f"OpenAI API call failed: {str(e)}")
-
-
-class LocalModelStrategy(LLMStrategy):
-    def __init__(self):
-        self.client = OpenAI(
-            base_url=config.local_url,
-            api_key="not-needed"
-        )
-        self.model = "local-model"
-
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> None:
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                response_format=create_json_schema(response_model),
-                max_tokens=max_tokens
-            )
-            return response_model.model_validate_json(completion.choices[0].message.content)
-        except Exception as e:
-            raise RuntimeError(f"Local model API call failed: {str(e)}")
-
-
-class LLMContext:
-    def __init__(self, strategy: LLMStrategy):
-        self._strategy = strategy
-
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> T:
-        return self._strategy.make_api_call(messages, response_model, max_tokens)
-
-
-def get_llm_strategy(provider: LLMProvider) -> LLMStrategy:
-    if provider == LLMProvider.OPENAI:
-        return OpenAIStrategy()
-    elif provider == LLMProvider.ANTHROPIC:
-        return AnthropicStrategy()
-    else:
-        return LocalModelStrategy()
-
-
-config = Config()
-# Use the function to initialize the LLMContext
-llm_context = LLMContext(get_llm_strategy(config.LLM_PROVIDER))
-
-
-def make_api_call(messages: List[Dict[str, str]], response_model: Type[T], max_tokens: int = 1500) -> T:
-    return llm_context.make_api_call(messages, response_model, max_tokens)
-
-
-def get_string_similarity(a, b):
-    """Calculate similarity ratio between two strings."""
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-
 class OutcomeType(Enum):
     POSITIVE = "positive"
     NEUTRAL = "neutral"
     NEGATIVE = "negative"
+    CATASTROPHE = "catastrophe"
+
+
+class EventType(Enum):
+    SINGLE_EVENT = "single_event"
+    REACTION = "reaction"
+    FOLLOWUP = "followup"
 
 
 class ActionChoice(BaseModel):
@@ -272,14 +132,149 @@ class TribeType(BaseModel):
     development: DevelopmentType
     stance: DiplomaticStance
 
+
 class ForeignTribeType(TribeType):
     diplomatic_status: DiplomaticStatus
     leaders: List[Character]
+
 
 class InitialChoices(BaseModel):
     choices: List[TribeType]
 
 
+class TextFormatter:
+    @staticmethod
+    def get_sentiment(opinion: int) -> str:
+        if opinion >= 90:
+            return "devoted"
+        elif opinion >= 70:
+            return "strongly positive"
+        elif opinion >= 40:
+            return "favorable"
+        elif opinion >= 10:
+            return "somewhat positive"
+        elif opinion > -10:
+            return "neutral"
+        elif opinion >= -40:
+            return "somewhat negative"
+        elif opinion >= -70:
+            return "unfavorable"
+        elif opinion >= -90:
+            return "strongly negative"
+        else:
+            return "hostile"
+
+    @staticmethod
+    def format_tribe_description(tribe: TribeType, leaders: List[Character], relation: bool) -> str:
+        tribe_type = get_tribe_orientation(tribe.development, tribe.stance)
+        text = f"""{tribe.name}
+{tribe_type}
+
+{tribe.description}
+
+Leaders:"""
+
+        for leader in leaders:
+            text += TextFormatter._format_leader(leader, relation)
+        return text
+
+    @staticmethod
+    def _format_leader(leader: Character, relation: bool) -> str:
+        text = f"\n  • {leader.title}: {leader.name}"
+        if leader.relationships and relation:
+            text += "\n    Relationships:"
+            for rel in leader.relationships:
+                sentiment = TextFormatter.get_sentiment(rel.opinion)
+                text += f"\n      - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})"
+        return text
+
+    @staticmethod
+    def format_foreign_tribes(foreign_tribes: List[ForeignTribeType], relation: bool) -> str:
+        if not foreign_tribes:
+            return ""
+
+        text = "\n\nForeign Tribes:"
+        status_order = [DiplomaticStatus.ALLY, DiplomaticStatus.NEUTRAL, DiplomaticStatus.ENEMY]
+        tribes_by_status = {status: [] for status in status_order}
+
+        for tribe in foreign_tribes:
+            tribes_by_status[tribe.diplomatic_status].append(tribe)
+
+        for status in status_order:
+            if tribes_by_status[status]:
+                text += f"\n\n{status.value.title()}:"
+                for tribe in tribes_by_status[status]:
+                    text += TextFormatter._format_foreign_tribe(tribe, relation)
+        return text
+
+    @staticmethod
+    def _format_foreign_tribe(tribe: ForeignTribeType, relation: bool) -> str:
+        foreign_type = get_tribe_orientation(tribe.development, tribe.stance)
+        text = f"\n\n{tribe.name}\n  {foreign_type}\n{tribe.description}"
+
+        if tribe.leaders:
+            text += "\nLeaders:"
+            for leader in tribe.leaders:
+                text += TextFormatter._format_leader(leader, relation)
+        return text
+
+    @staticmethod
+    def export_tribe_only(tribe: TribeType, leaders: List[Character], foreign_tribes: List[ForeignTribeType]) -> str:
+        text = TextFormatter.format_tribe_description(tribe, leaders, False)
+        text += TextFormatter.format_foreign_tribes(foreign_tribes, False)
+        return text
+
+    @staticmethod
+    def export_relationships_only(leaders: List[Character],
+                                  foreign_tribes: List[ForeignTribeType]) -> str:
+        text = ""
+
+        # Player tribe relationships
+        for leader in leaders:
+            if leader.relationships:
+                text += f"\n{leader.name} ({leader.title}):\n"
+                for rel in leader.relationships:
+                    sentiment = TextFormatter.get_sentiment(rel.opinion)
+                    text += f"  - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})\n"
+
+        # Foreign tribe relationships
+        for foreign_tribe in foreign_tribes:
+            if foreign_tribe.leaders:
+                for leader in foreign_tribe.leaders:
+                    if leader.relationships:
+                        text += f"\n{leader.name} ({leader.title}) from {foreign_tribe.name}:\n"
+                        for rel in leader.relationships:
+                            sentiment = TextFormatter.get_sentiment(rel.opinion)
+                            text += f"  - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})\n"
+
+        return text
+
+
+# Class for managing game history
+class GameHistory:
+    def __init__(self):
+        self.history: List['GameState'] = []
+
+    def add_state(self, state: 'GameState'):
+        self.history.append(copy.deepcopy(state))
+
+    def get_recent_history(self) -> str:
+        formatted_events = []
+        if self.history:
+            for event in reversed(self.history):
+                turn_header = f"=== Turn {event.turn} ==="
+                formatted_events.extend([turn_header, event.event_result])
+        return "\n\n".join(formatted_events)
+
+    def get_recent_short_history(self, num_events: int = 5) -> str:
+        recent_events = self.history[-num_events - 1:-1][-num_events:]
+        return "\n\n".join([
+            f"- {event.event_result_short} (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
+            for event in recent_events
+        ])
+
+
+# Main GameState class
 class GameStateBase(BaseModel):
     tribe: TribeType
     leaders: List[Character]
@@ -291,131 +286,41 @@ class GameStateBase(BaseModel):
 
 class GameState(GameStateBase):
     previous_situation: Optional[str] = None
-    current_action_choices: Optional[NextChoices] = None
-    last_action_sets: List[List[str]] = Field(default_factory=list)
-    chosen_action: ActionChoice = None
+    current_action_choices: Optional['NextChoices'] = None
+    chosen_action: Optional['ActionChoice'] = None
     last_outcome: Optional[OutcomeType] = None
     turn: int = 1
+    streak_count: int = 0
+    tier: int = 1
+    power: int = 5
+
+    # Composition instead of inheritance
+    text_formatter: TextFormatter = Field(default_factory=lambda: TextFormatter(), exclude=True)
 
     class Config:
         arbitrary_types_allowed = True
 
     def add_action_set(self, actions: List[str]):
-        self.last_action_sets.append(actions)
-        if len(self.last_action_sets) > 3:  # Keep only the last 3 sets
-            self.last_action_sets.pop(0)
+        self.action_history.add_action_set(actions)
 
     def to_context_string(self) -> str:
-        def get_sentiment(opinion: int) -> str:
-            if opinion >= 90:
-                return "devoted"
-            elif opinion >= 70:
-                return "strongly positive"
-            elif opinion >= 40:
-                return "favorable"
-            elif opinion >= 10:
-                return "somewhat positive"
-            elif opinion > -10:
-                return "neutral"
-            elif opinion >= -40:
-                return "somewhat negative"
-            elif opinion >= -70:
-                return "unfavorable"
-            elif opinion >= -90:
-                return "strongly negative"
-            else:
-                return "hostile"
+        tribe_text = self.text_formatter.format_tribe_description(self.tribe, self.leaders, True)
+        foreign_tribes_text = self.text_formatter.format_foreign_tribes(self.foreign_tribes, True)
+        return tribe_text + foreign_tribes_text
 
-        # Get tribe orientation
-        tribe_type = get_tribe_orientation(self.tribe.development, self.tribe.stance)
-
-        # Build main tribe section
-        text = f"""{self.tribe.name}
-{tribe_type}
-
-{self.tribe.description}
-
-Leaders:"""
-
-        # Format all leaders with consistent formatting and their relationships
-        for leader in self.leaders:
-            text += f"\n  • {leader.title}: {leader.name}"
-            if leader.relationships:
-                text += "\n    Relationships:"
-                for rel in leader.relationships:
-                    sentiment = get_sentiment(rel.opinion)
-                    text += f"\n      - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})"
-
-        # Add foreign tribes section if there are any
-        if self.foreign_tribes:
-            text += "\n\nForeign Tribes:"
-
-            # Create a dictionary to group tribes by diplomatic status
-            status_order = [DiplomaticStatus.ALLY, DiplomaticStatus.NEUTRAL, DiplomaticStatus.ENEMY]
-            tribes_by_status = {status: [] for status in status_order}
-
-            # Group tribes by their diplomatic status
-            for tribe in self.foreign_tribes:
-                tribes_by_status[tribe.diplomatic_status].append(tribe)
-
-            # Add tribes in order of diplomatic status
-            for status in status_order:
-                if tribes_by_status[status]:
-                    # Add status header
-                    text += f"\n\n{status.value.title()}:"
-
-                    # Add each tribe in this status group
-                    for foreign_tribe in tribes_by_status[status]:
-                        foreign_type = get_tribe_orientation(
-                            foreign_tribe.development,
-                            foreign_tribe.stance
-                        )
-
-                        text += f"\n\n{foreign_tribe.name}"
-                        text += f"\n  {foreign_type}"
-                        text += f"\n{foreign_tribe.description}"
-
-                        # Add foreign tribe leaders and their relationships
-                        if foreign_tribe.leaders:
-                            text += "\nLeaders:"
-                            for leader in foreign_tribe.leaders:
-                                text += f"\n  • {leader.title}: {leader.name}"
-                                if leader.relationships:
-                                    text += "\n    Relationships:"
-                                    for rel in leader.relationships:
-                                        sentiment = get_sentiment(rel.opinion)
-                                        text += f"\n      - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})"
-
+    def tribe_string(self) -> str:
+        text = self.text_formatter.export_tribe_only(self.tribe, self.leaders, self.foreign_tribes)
         return text
 
-    @staticmethod
-    def get_recent_history() -> str:
-        global history
-        formatted_events = []
-        if len(history) > 0:
-            for event in reversed(history):
-                turn_header = f"=== Turn {event.turn} ==="
-                formatted_events.extend([turn_header, event.event_result])
-        return "\n\n".join(formatted_events)
-
-    @staticmethod
-    def get_recent_short_history(num_events: int = 5) -> str:
-        global history
-        # Calculate the starting index from the end
-        start_idx = 1 + num_events
-
-        # Get the slice of events we want, in reverse order
-        recent_events = history[-start_idx:-1][-num_events:]
-        return "\n\n".join([
-                f"- {event.event_result_short } (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
-                for event in recent_events])
-
+    def relationship_string(self) -> str:
+        text = self.text_formatter.export_relationships_only(self.leaders, self.foreign_tribes)
+        return text
 
     @classmethod
     def initialize(cls, tribe: TribeType, leader: Character) -> 'GameState':
         return cls(
             tribe=tribe,
-            leaders=[leader, ],
+            leaders=[leader],
             foreign_tribes=[],
             situation="",
             event_result="",
@@ -426,90 +331,360 @@ Leaders:"""
         for field in GameStateBase.model_fields:
             setattr(self, field, getattr(new_state, field))
 
+    def update_streak(self, outcome: OutcomeType) -> None:
+        """Updates the streak counter based on the outcome."""
+        if outcome == OutcomeType.POSITIVE:
+            self.streak_count += 1
+        else:
+            self.streak_count = 0
 
-current_game_state: Optional[GameState] = None
-global history
-history: List[GameState] = []
-
-
-def generate_tribe_choices() -> InitialChoices:
-    # Generate 3 unique combinations of development type and diplomatic stance
-    # combinations: List[Tuple[DevelopmentType, DiplomaticStance]] = []
-    possible_combinations = [
-        (dev, stance)
-        for dev in DevelopmentType
-        for stance in DiplomaticStance
-    ]
-
-    selected_combinations = random.sample(possible_combinations, 3)
-
-    # Get orientation descriptions for each combination
-    orientations = [
-        get_tribe_orientation(dev_type, stance)
-        for dev_type, stance in selected_combinations
-    ]
-
-    # Construct the prompt with the specific requirements for each tribe
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
-        },
-        {
-            "role": "user",
-            "content": f"""Create three unique tribes with the following specifications:
-
-Tribe 1: 
-- Must be {selected_combinations[0][0].value} in development and {selected_combinations[0][1].value} in diplomacy
-- Should fit the description: {orientations[0]}
-
-Tribe 2:
-- Must be {selected_combinations[1][0].value} in development and {selected_combinations[1][1].value} in diplomacy
-- Should fit the description: {orientations[1]}
-
-Tribe 3:
-- Must be {selected_combinations[2][0].value} in development and {selected_combinations[2][1].value} in diplomacy
-- Should fit the description: {orientations[2]}
-
-For each tribe provide:
-1. A unique tribe name (do not use 'Sylvan')
-2. A description of the tribe (without mentioning the tribe name, and do not quote the given description directly)
-"""
+    def adjust_power(self, outcome: OutcomeType) -> None:
+        """Adjusts power level based on the outcome type."""
+        power_adjustments = {
+            OutcomeType.POSITIVE: 2,
+            OutcomeType.NEUTRAL: 0,
+            OutcomeType.NEGATIVE: -1,
+            OutcomeType.CATASTROPHE: -3
         }
-    ]
+        self.power += power_adjustments[outcome]
 
-    choices = make_api_call(messages, InitialChoices, max_tokens=2000)
+    def update_tier(self) -> None:
+        """Updates the tier based on the current power level."""
+        self.tier = min(self.power // 10, 4) + 1
 
-    if choices:
-        print("\n=== Available Tribe Choices ===")
-        for number, (choice, (dev_type, stance)) in enumerate(zip(choices.choices, selected_combinations)):
-            tribe_type = get_tribe_orientation(dev_type, stance)
-            print(f"\n{number}. {choice.name}, {tribe_type}")
-            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
+    def check_streak_catastrophe(self) -> bool:
+        """Checks if streak has reached catastrophe level."""
+        if self.streak_count >= 4:
+            self.streak_count = 0
+            return True
+        return False
+
+
+class GameStateManager:
+    def __init__(self, llm_context: LLMContext):
+        self.current_game_state: Optional[GameState] = None
+        self.game_history = GameHistory()
+        self.llm_context = llm_context
+        self.current_tribe_choices = None
+
+    def reset(self):
+        self.current_game_state = None
+        self.game_history = GameHistory()
+
+    def initialize(self, tribe: TribeType, leader: Character):
+        self.current_game_state = GameState.initialize(tribe, leader)
+        self.game_history = GameHistory()
+
+    def perform_action(self, index: int):
+        action = self.current_game_state.current_action_choices.choices[index]
+        self.current_game_state.chosen_action = action
+        self.current_game_state.previous_situation = self.current_game_state.situation
+        outcome, roll = self.determine_outcome(action.probability)
+        print(f"Debug: Roll = {roll:.2f}, Probability = {action.probability:.2f}")
+        # Handle streak catastrophe
+        if self.current_game_state.check_streak_catastrophe():
+            outcome = OutcomeType.CATASTROPHE
+
+        # Update game state
+        self.current_game_state.update_streak(outcome)
+        self.current_game_state.adjust_power(outcome)
+        self.current_game_state.update_tier()
+        self.current_game_state.last_outcome = outcome
+        self.update_game_state()
+        event_type = self.decide_event_type()
+        print(f"Event type: {event_type}")
+        self.generate_choices(event_type)
+        self.game_history.add_state(self.current_game_state)
+        base_filename = "Debug_History"
+        # Create timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Create unique filename
+        filename = f"{base_filename}_turn{self.current_game_state.turn}_{timestamp}.json"
+        self.save_all_game_states(filename)
+        self.current_game_state.turn += 1
+
+
+    def get_current_state(self) -> Optional[GameState]:
+        return self.current_game_state
+
+    def set_current_state(self, state: GameState):
+        self.current_game_state = state
+        self.game_history.add_state(state)
+
+    def save_all_game_states(self, filename: str):
+        with open(filename, 'w') as f:
+            json.dump(self.game_history.history, f, cls=EnumEncoder)
+
+        # Also write the story version
+        filename = filename.replace('.json', '_story.txt')
+        story = []
+        for state in self.game_history.history:
+            story.append(f"=== Turn {state.turn} ===")
+
+            story.append(f"Situation: {state.previous_situation}")
+
+            story.append(f"Taken action: {state.chosen_action.description}")
+
+            outcome = OutcomeType(state.last_outcome).name
+            story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
+
+        with open(filename, 'w') as f:
+            f.write("\n".join(story))
+
+    def load_game_state(self, filename: str):
+        with open(filename, 'r') as f:
+            loaded_history = json.load(f)
+
+        # Convert enum dictionaries to actual enum values
+        converted_history = convert_enums(loaded_history)
+
+        # Convert each history entry to a GameState object
+        history: List[GameState] = [GameState(**state) for state in converted_history]
+
+        # Set the current game state to the last item in the history
+        self.current_game_state = copy.deepcopy(history[-1])
+
+        # Add all states to the history
+        for state in history:
+            self.game_history.add_state(state)
+        self.current_game_state.turn += 1
+
+    def generate_tribe_choices(self) -> InitialChoices:
+        # Generate 3 unique combinations of development type and diplomatic stance
+        external_choice = ""
+
+        possible_combinations = [
+            (dev, stance)
+            for dev in DevelopmentType
+            for stance in DiplomaticStance
+        ]
+
+        selected_combinations = random.sample(possible_combinations, 3)
+
+        # Get orientation descriptions for each combination
+        orientations = [
+            get_tribe_orientation(dev_type, stance)
+            for dev_type, stance in selected_combinations
+        ]
+        tribe1 = ""
+        if external_choice != "":
+            tribe1 = f"- Must be {external_choice}."
+        else:
+            tribe1 = f"""- Must be {selected_combinations[0][0].value} in development and {selected_combinations[0][1].value} in diplomacy
+        - Should fit the description: {orientations[0]}"""
+
+        # Construct the prompt with the specific requirements for each tribe
+        messages = [
+            {
+                "role": "system",
+                "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
+            },
+            {
+                "role": "user",
+                "content": f"""Create three unique tribes with the following specifications:
+
+    Tribe 1: 
+    {tribe1}
+
+    Tribe 2:
+    - Must be {selected_combinations[1][0].value} in development and {selected_combinations[1][1].value} in diplomacy
+    - Should fit the description: {orientations[1]}
+
+    Tribe 3:
+    - Must be {selected_combinations[2][0].value} in development and {selected_combinations[2][1].value} in diplomacy
+    - Should fit the description: {orientations[2]}
+
+    One tribe should consist of {external_choice}.
+    For each tribe provide:
+    1. A unique tribe name (do not use 'Sylvan')
+    2. A description of the tribe (without mentioning the tribe name, and do not quote the given description directly)
+    3. Its DevelopmentType
+    4. Its DiplomaticStance"""
+            }
+        ]
+
+        choices = self.llm_context.make_api_call(messages, InitialChoices, max_tokens=2000)
+
+        if choices:
+            self.current_tribe_choices = choices
+            print("\n=== Available Tribe Choices ===")
+            for number, (choice, (dev_type, stance)) in enumerate(zip(choices.choices, selected_combinations)):
+                tribe_type = get_tribe_orientation(dev_type, stance)
+                print(f"\n{number}. {choice.name}, {tribe_type}")
+                print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
+                                    subsequent_indent="   "))
+
+        return choices
+
+    def get_leader(self, chosen_tribe: TribeType) -> Character:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
+            },
+            {
+                "role": "user",
+                "content": f"""Give me the name and title for the leader of {chosen_tribe.name}. Their description is:
+{chosen_tribe.description}. The leader does not have relationships with other characters."""
+            }
+        ]
+
+        leader = self.llm_context.make_api_call(messages, Character, max_tokens=2000)
+
+        if leader:
+            print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
                                 subsequent_indent="   "))
 
-    return choices
+        return leader
 
-def get_leader(chosen_tribe: TribeType) -> Character:
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
-        },
-        {
-            "role": "user",
-            "content": f"""Give me the name and title for the leader of {chosen_tribe.name}. Their description is:
-{chosen_tribe.description}"""
+    def get_probability_adjustment(self) -> str:
+        if self.current_game_state.last_outcome not in [OutcomeType.POSITIVE]:
+            return "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
+        return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
+
+    def generate_choices(self, choice_type: EventType) -> None:
+        recent_history = self.game_history.get_recent_short_history(num_events=3)
+        prob_adjustment = self.get_probability_adjustment()
+
+        action_context = ""
+        if self.current_game_state.chosen_action:
+            action_context = f"""Action: {self.current_game_state.chosen_action.caption}
+    {self.current_game_state.chosen_action.description}
+
+    Outcome: {self.current_game_state.event_result}"""
+
+        choice_types = {
+            EventType.SINGLE_EVENT: {"instruction": "create a new event", "extra": ""},
+            EventType.REACTION: {"instruction": "create a reaction to this last outcome",
+                                 "extra": "Include a foreign character in the reaction."},
+            EventType.FOLLOWUP: {"instruction": "create a follow up to this last outcome",
+                                 "extra": "Keep choices thematically close to the last action."}
         }
-    ]
 
-    leader = make_api_call(messages, Character, max_tokens=2000)
+        if choice_type not in choice_types:
+            raise ValueError(f"Invalid choice type: {choice_type}")
 
-    if leader:
-        print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
-                            subsequent_indent="   "))
+        choice_type_fields = choice_types[choice_type]
 
-    return leader
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a game master for a tribal fantasy strategy game. Output answers as JSON"
+            },
+            {
+                "role": "user",
+                "content": f"""State: {self.current_game_state.to_context_string()}
+    History: {recent_history}
+    Previous: {self.current_game_state.previous_situation}
+
+    {action_context}
+
+    {choice_type_fields['instruction']} and add to:
+    {self.current_game_state.situation}
+    Save a summary in "situation".
+
+    Present 3 possible next actions:
+    {choice_type_fields['extra']}
+    - Include consequences and strategic considerations
+    {prob_adjustment}
+    - One choice should have high probability
+    - Include at least one aggressive option (probability based on tribe info)"""
+            }
+        ]
+
+        next_choices = self.llm_context.make_api_call(messages, NextReactionChoices, max_tokens=2000)
+        if next_choices:
+            self.current_game_state.situation = next_choices.situation
+            self.current_game_state.current_action_choices = NextChoices(choices=next_choices.choices)
+
+            print("\n=== Available Actions ===")
+            for i, choice in enumerate(next_choices.choices, 1):
+                print(f"\n{i}. {choice.caption}")
+                print(textwrap.fill(f"Description: {choice.description}",
+                                    width=80,
+                                    initial_indent="   ",
+                                    subsequent_indent="   "))
+                print(f"   Probability of Success: {choice.probability:.2f}")
+
+    def update_game_state(self) -> None:
+        recent_history = self.game_history.get_recent_short_history(num_events=5)
+        tribes_prompt = ""
+        enemy_count = sum(
+            1 for tribe in self.current_game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.ENEMY)
+        neutral_count = sum(
+            1 for tribe in self.current_game_state.foreign_tribes if
+            tribe.diplomatic_status == DiplomaticStatus.NEUTRAL)
+
+        if self.current_game_state.turn > 5 and enemy_count < 1:
+            tribes_prompt += "* Add one or two enemy factions\n"
+        if self.current_game_state.turn > 3 and neutral_count < 2:
+            tribes_prompt += "* Add one or two neutral factions\n"
+
+        messages = [
+            {
+                "role": "system",
+                "content": "You are the game master for a text-based strategic game, where the player rules over a tribe in a fantasy setting. Your task is to update the game state based on the player's actions and their outcomes."
+            },
+            {
+                "role": "user",
+                "content": f"""State: {self.current_game_state.to_context_string()}
+Development: {self.current_game_state.tribe.development.value}
+Stance: {self.current_game_state.tribe.stance.value}
+
+History: {recent_history}
+Previous: {self.current_game_state.previous_situation}
+Action: {self.current_game_state.chosen_action.caption} - {self.current_game_state.chosen_action.description}
+Outcome: {self.current_game_state.last_outcome.name}
+
+Required Updates:
+
+1. Leaders (max 5):
+   - Update names, titles and relationships, both to tribe leaders as well as to leaders of foreign tribes
+   - Add special roles if warranted
+   - Only major changes based on events
+
+2. Situation:
+   - Current state summary
+
+3. Foreign Relations:
+   - For each tribe: status, name, description, development, stance, leaders (max 2)
+   - For each leader pf a foreign tribe: Names, titles, relationships to the leaders of the players tribe
+   - Status changes require multiple turns
+   - Consider development/stance compatibility
+   {tribes_prompt}
+4. Event Results:
+   - 2-3 paragraphs narrative (event_result)
+   - Brief summary (event_result_short)
+   - Events may continue
+
+Maintain consistency with game state, action outcomes, and existing relationships."""
+            }
+        ]
+
+        new_state = self.llm_context.make_api_call(messages, GameStateBase, max_tokens=3000)
+        self.current_game_state.update(new_state)
+
+
+    @staticmethod
+    def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
+        roll = random.random()
+        # roll = 0.0
+        # roll = 1.0
+        if roll > 0.95:
+            return OutcomeType.CATASTROPHE, roll
+        if roll < probability:
+            return OutcomeType.POSITIVE, roll
+        elif roll < (probability + (1 - probability) / 2):
+            return OutcomeType.NEUTRAL, roll
+        else:
+            return OutcomeType.NEGATIVE, roll
+
+    @staticmethod
+    def decide_event_type() -> EventType:
+        return random.choices(
+            [EventType.SINGLE_EVENT, EventType.REACTION, EventType.FOLLOWUP],
+            weights=[0.2, 0.4, 0.4], k=1)[0]
+
 
 def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance) -> str:
     """
@@ -542,317 +717,33 @@ def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance
             return "Warriors who excel in military innovation"
 
 
-
-
-def generate_choices(game_state: GameState, choice_type: str) -> NextReactionChoices:
-    recent_history = game_state.get_recent_short_history(num_events=5)
-    probability_adjustment = get_probability_adjustment(game_state.last_outcome)
-
-    if game_state.chosen_action:
-        action_context = f"""The player chose the following action: {game_state.chosen_action.caption}
-{game_state.chosen_action.description}
-
-The outcome of this action was:
-{game_state.event_result}"""
-    else:
-        action_context = ""
-    action_instruction = ""
-    additional_instructions = ""
-
-    if choice_type == "single_event":
-        action_instruction = "create a new event. Add the event description to:"
-    elif choice_type == "reaction":
-        action_instruction = "create a reaction to this last outcome. Add this reaction to:"
-        additional_instructions = "The reaction should include one of the foreign characters of the foreign tribe."
-    elif choice_type == "followup":
-        action_instruction = "create a follow up to this last outcome. Add this follow up to:"
-        additional_instructions = "Keep these choices thematically close to the last action."
-    else:
-        raise ValueError(f"Invalid choice type: {choice_type}")
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text based strategic game, where the player rules over a tribe in a fantasy based setting. Output your answers as JSON"
-        },
-        {
-            "role": "user",
-            "content": f"""Current game state: 
-            Player tribe: {game_state.to_context_string()}
-
-Recent History:
-{recent_history}
-
-Last situation: 
-{game_state.previous_situation} 
-
-{action_context}
-
-Based on this information, {action_instruction}
-{game_state.situation} 
-while slightly summarizing it and save it in "situation".
-
-Then present three possible actions the player can take next, possibly utilizing one or more of the tribes characters. 
-{additional_instructions}
-Include potential consequences and strategic considerations for each action.
-{probability_adjustment}
-Give one of the choices a quite high probability, and make at least one choice quite aggressive, 
-but do not automatically give the aggressive options a low probability. Instead, base the probabilities on the given information about the tribe. """
-        }
-    ]
-
-    next_choices = make_api_call(messages, NextReactionChoices, max_tokens=2000)
-    if next_choices:
-        print("\n=== Available Actions ===")
-        for i, choice in enumerate(next_choices.choices, 1):
-            print(f"\n{i}. {choice.caption}")
-            print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
-                                subsequent_indent="   "))
-            print(f"   Probability of Success: {choice.probability:.2f}")
-    return next_choices
-
-
-def get_probability_adjustment(last_outcome: OutcomeType) -> str:
-    if last_outcome in [OutcomeType.NEUTRAL, OutcomeType.NEGATIVE]:
-        return "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
-    return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
-
-
-def generate_new_game_state(game_state: GameState) -> GameStateBase:
-    recent_history = game_state.get_recent_short_history(num_events=5)
-    tribes_prompt = ""
-    enemy_count = sum(1 for tribe in game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.ENEMY)
-    neutral_count = sum(1 for tribe in game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.NEUTRAL)
-
-    if game_state.turn > 5 and enemy_count < 1:
-        tribes_prompt += "Add one or two enemy factions"
-    if game_state.turn > 3 and neutral_count < 2:
-        tribes_prompt += "Add one or two neutral factions"
-
-    messages = [
-        {
-            "role": "system",
-            "content": "You are the game master for a text-based strategic game, where the player rules over a tribe in a fantasy setting. Your task is to update the game state based on the player's actions and their outcomes."
-        },
-        {
-            "role": "user",
-            "content": f"""Current game state: 
-            Player tribe: {game_state.to_context_string()}
-The tribes development is {game_state.tribe.development.value}, its diplomatic stance is {game_state.tribe.stance.value}.
-Change this only for major upheavals!
-
-Recent History:
-{recent_history}
-
-Previous Situation: 
-{game_state.previous_situation}
-
-Player's Chosen Action: {game_state.chosen_action.caption}
-{game_state.chosen_action.description}
-
-Action Outcome: {game_state.last_outcome.name}
-
-Please provide an updated game state given the chosen action and its outcome.
-Remember that events typically span multiple turns - this outcome doesn't need to conclude the event.
-
-Required Updates:
-
-1. Tribe and Leadership Changes:
-   - Update the tribe's name and description if major events warrant it
-   - Modify leader names, titles, add/remove leaders as appropriate and add, update or delete their realtionships to each othera dn to other tribe's leaders.
-   - Consider adding special leaders (heroes, generals, mages, shamans)
-   - Maximum of 5 leaders total
-   - Changes should reflect significant events (alliances, marriages, wars, etc.)
-   - Tribe name changes should be rare and tied to momentous events
-
-2. Current Situation:
-   - Provide an updated situation field reflecting recent developments
-
-3. Foreign Relations:
-   - Update foreign tribes (ForeignTribeType) with:
-     * Diplomatic status (ALLY/NEUTRAL/ENEMY)
-     * Name and description (do not put the tribe name in the description)
-     * Development type and stance
-     * Leaders (maximum 2 per tribe) and their relationships
-     {tribes_prompt}
-   - Remember that diplomatic changes take time:
-     * Multiple turns to move from NEUTRAL to ALLY
-     * Even longer to form formal alliances
-     * Consider the impact of development types and stances
-
-4. Event Results:
-   - Provide a narrative description in event_result
-   - Tell the story of what happened in 2-3 paragraphs
-   - Focus on narrative impact while maintaining consistency
-   - Remember the event may continue in future turns
-   - Include a short summary in event_result_short
-
-Be creative but ensure all updates maintain consistency with:
-- The current game state
-- The chosen action and its outcome
-- The tribe's development type and diplomatic stance
-- Existing relationships and ongoing storylines
-"""
-        }
-    ]
-
-    new_state = make_api_call(messages, GameStateBase, max_tokens=3000)
-    print(textwrap.fill(f"{new_state}", width=80))
-    return new_state
-
-
-def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
-    roll = random.random()
-    # roll = 0.0
-    # roll = 1.0
-    if roll < probability:
-        return OutcomeType.POSITIVE, roll
-    elif roll < (probability + (1 - probability) / 2):
-        return OutcomeType.NEUTRAL, roll
-    else:
-        return OutcomeType.NEGATIVE, roll
-
-
-def decide_event_type() -> str:
-    return random.choices(["single_event", "reaction", "followup"], weights=[0.2, 0.4, 0.4], k=1)[0]
-    # return "followup"
-
-
-def write_story_history(history: List[GameState], filename: str):
-    story = []
-    for state in history:
-        story.append(f"=== Turn {state.turn} ===")
-
-        story.append(f"Situation: {state.previous_situation}")
-
-        story.append(f"Taken action: {state.chosen_action.description}")
-
-        outcome = OutcomeType(state.last_outcome).name
-        story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
-
-    with open(filename, 'w') as f:
-        f.write("\n".join(story))
-
-
-def save_all_game_states(filename: str):
-    global history
-    with open(filename, 'w') as f:
-        json.dump(history, f, cls=EnumEncoder)
-
-    # Also write the story version
-    write_story_history(history, filename.replace('.json', '_story.txt'))
-
-
-def load_game_state(filename) -> tuple[List[GameState], GameState]:
-    with open(filename, 'r') as f:
-        loaded_history = json.load(f)
-
-    # Convert enum dictionaries to actual enum values
-    converted_history = convert_enums(loaded_history)
-
-    # Convert each history entry to a GameState object
-    history: List[GameState] = [GameState(**state) for state in converted_history]
-
-    # The current game state is the last item in the history
-    current_game_state = copy.deepcopy(history[-1])
-
-    return history, current_game_state
-
-
 def create_gui():
-    global current_game_state
-    global current_tribe_choices
-    global current_action_choices
-    global config
-    global llm_context
+    config = Config.from_env()
+    # Use the function to initialize the LLMContext
+    llm_context = LLMContext(config)
+    game_manager = GameStateManager(llm_context)
 
-    current_tribe_choices = None
-    current_action_choices = None
-
-    def save_settings(provider_str, model, url):
-        try:
-            # Convert string to enum
-            provider = LLMProvider(provider_str.lower())
-
-            # Update config
-            config.LLM_PROVIDER = provider
-
-            # Update global llm_context with new strategy
-            global llm_context
-            llm_context = LLMContext(get_llm_strategy(provider))
-
-            # Store additional settings that might be needed by specific strategies
-            if hasattr(config, 'openai_model'):
-                config.openai_model = model
-            if hasattr(config, 'local_url'):
-                config.local_url = url
-
-            return f"Settings saved: Provider: {provider.value}, Model: {model}, URL: {url}"
-        except ValueError as e:
-            return f"Error saving settings: {str(e)}"
-
-    def save_current_game():
-        global history
-        save_all_game_states('test.json')
-        return "Game saved successfully!"
-
-    def load_saved_game(filename):
-        global current_game_state, current_action_choices, history
-        try:
-            history, current_game_state = load_game_state(filename)
-            current_action_choices = current_game_state.current_action_choices
-
-            # Update all necessary GUI elements
-            tribe_overview = current_game_state.to_context_string()
-            recent_history = current_game_state.get_recent_history()
-            current_situation = current_game_state.situation
-
-            action_updates = []
-            choices = current_action_choices.choices if current_action_choices else []
-            for i in range(3):
-                if i < len(choices):
-                    choice = choices[i]
-                    action_updates.extend([
-                        gr.update(visible=True, value=choice.caption),
-                        gr.update(visible=True, value=choice.description)
-                    ])
-                else:
-                    action_updates.extend([gr.update(visible=False), gr.update(visible=False)])
-
-            current_game_state.turn += 1
-            return (
-                "Game loaded successfully!",
-                gr.update(visible=False),  # Hide tribe selection group
-                gr.update(visible=True, value=tribe_overview),  # Show and update tribe overview
-                gr.update(visible=True, value=recent_history),  # Show and update recent history
-                gr.update(visible=True, value=current_situation),  # Show and update current situation
-                *action_updates
-            )
-        except FileNotFoundError:
-            return (
-                "No saved game found.",
-                gr.update(visible=True),  # Show tribe selection group
-                gr.update(visible=False),  # Keep tribe overview hidden
-                gr.update(visible=False),  # Keep recent history hidden
-                gr.update(visible=False),  # Keep current situation hidden
-                *[gr.update(visible=False)] * 6
-            )
+    def perform_action(action_index):
+        game_manager.perform_action(action_index)
+        return update_game_display()
 
     def update_game_display():
-        if not current_game_state:
+        if not game_manager.current_game_state:
             return (
                 gr.update(visible=False, value="No active game"),
                 gr.update(visible=False, value="No history"),
+                gr.update(visible=False, value="No relationships"),
                 gr.update(visible=False, value="No current situation"),
                 *[gr.update(visible=False)] * 6
             )
 
-        tribe_overview = current_game_state.to_context_string()
-        recent_history = current_game_state.get_recent_history()
-        current_situation = current_game_state.situation
+        tribe_overview = game_manager.current_game_state.tribe_string()
+        relationships = game_manager.current_game_state.relationship_string()
+        recent_history = game_manager.game_history.get_recent_history()
+        current_situation = game_manager.current_game_state.situation
 
-        if current_action_choices is not None:
-            choices = current_action_choices.choices
+        if game_manager.current_game_state.current_action_choices is not None:
+            choices = game_manager.current_game_state.current_action_choices.choices
         else:
             choices = []
 
@@ -870,60 +761,81 @@ def create_gui():
         return (
             gr.update(visible=True, value=tribe_overview),
             gr.update(visible=True, value=recent_history),
+            gr.update(visible=True, value=relationships),
             gr.update(visible=True, value=current_situation),
             *updates
         )
 
-    def perform_action(action_index):
-        global current_game_state, current_action_choices, history
+    def save_current_game():
+        game_manager.save_all_game_states('test.json')
+        return "Game saved successfully!"
 
-        current_game_state.previous_situation = current_game_state.situation
-        chosen_action = current_action_choices.choices[action_index]
-        current_game_state.chosen_action = chosen_action
+    def load_saved_game(filename):
+        try:
+            game_manager.load_game_state(filename)
+            current_action_choices = game_manager.current_game_state.current_action_choices
 
-        action_captions = [choice.caption for choice in current_action_choices.choices]
-        current_game_state.add_action_set(action_captions)
+            # Update all necessary GUI elements
+            tribe_overview = game_manager.current_game_state.tribe_string()
+            relationships = game_manager.current_game_state.relationship_string()
+            recent_history = game_manager.game_history.get_recent_history()
+            current_situation = game_manager.current_game_state.situation
 
-        outcome, roll = determine_outcome(chosen_action.probability)
-        current_game_state.last_outcome = outcome  # Store the last outcome
-        print(f"Debug: Roll = {roll:.2f}, Probability = {chosen_action.probability:.2f}")
+            action_updates = []
+            choices = current_action_choices.choices if current_action_choices else []
+            for i in range(3):
+                if i < len(choices):
+                    choice = choices[i]
+                    action_updates.extend([
+                        gr.update(visible=True, value=choice.caption),
+                        gr.update(visible=True, value=choice.description)
+                    ])
+                else:
+                    action_updates.extend([gr.update(visible=False), gr.update(visible=False)])
+            return (
+                "Game loaded successfully!",
+                gr.update(visible=False),  # Hide tribe selection group
+                gr.update(visible=True, value=tribe_overview),  # Show and update tribe overview
+                gr.update(visible=True, value=recent_history),  # Show and update recent history
+                gr.update(visible=True, value=relationships),  # Show and update relationships
+                gr.update(visible=True, value=current_situation),  # Show and update current situation
+                *action_updates
+            )
+        except FileNotFoundError:
+            return (
+                "No saved game found.",
+                gr.update(visible=True),  # Show tribe selection group
+                gr.update(visible=False),  # Keep tribe overview hidden
+                gr.update(visible=False),  # Keep recent history hidden
+                gr.update(visible=False),  # Keep relationships hidden
+                gr.update(visible=False),  # Keep current situation hidden
+                *[gr.update(visible=False)] * 6
+            )
 
-        new_state = generate_new_game_state(current_game_state)
+    def save_settings(provider_str, model, url):
+        try:
+            # Convert string to enum
+            provider = LLMProvider(provider_str.lower())
+            # Update config
+            config.LLM_PROVIDER = provider
 
-        current_game_state.update(new_state)
+            llm_context.update(config)
+            # Store additional settings that might be needed by specific strategies
+            if hasattr(config, 'openai_model'):
+                config.openai_model = model
+            if hasattr(config, 'local_url'):
+                config.local_url = url
 
-        event_type = decide_event_type()
-        print(f"Event type: {event_type}")
-        choices = generate_choices(current_game_state, event_type)
+            return f"Settings saved: Provider: {provider.value}, Model: {model}, URL: {url}"
+        except ValueError as e:
+            return f"Error saving settings: {str(e)}"
 
-        current_game_state.situation = choices.situation
-        current_action_choices = NextChoices(choices=choices.choices)
-
-        current_game_state.current_action_choices = current_action_choices
-        # Make a deep copy of the current game state before appending
-        deep_copy_state = copy.deepcopy(current_game_state)
-        # Append the deep copy to the history
-        history.append(deep_copy_state)
-        print("added game state to history")
-        base_filename = "Debug_History"
-        # Create timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Create unique filename
-        filename = f"{base_filename}_turn{current_game_state.turn}_{timestamp}.json"
-        save_all_game_states(filename)
-        print(f"turn{current_game_state.turn}")
-        current_game_state.turn += 1
-        print(f"turn{current_game_state.turn}")
-
-        return update_game_display()
-
-    def generate_tribe_choices_gui():
-        global current_tribe_choices, history
-        history = []
-        current_tribe_choices = generate_tribe_choices()
-        if current_tribe_choices:
+    def generate_tribes():
+        game_manager.reset()
+        game_manager.generate_tribe_choices()
+        if game_manager.current_tribe_choices:
             result = ""
-            for number, choice in enumerate(current_tribe_choices.choices):
+            for number, choice in enumerate(game_manager.current_tribe_choices.choices):
                 tribe_type = get_tribe_orientation(choice.development, choice.stance)
                 result += f"{number + 1}. {choice.name}, "
                 result += f"{tribe_type}\n"
@@ -933,37 +845,35 @@ def create_gui():
         else:
             return "Error generating initial choices. Please try again.", gr.update(visible=False)
 
-    def select_tribe_and_start_game(choice):
-        global current_game_state, current_tribe_choices, current_action_choices, history
-        history = []
-        if current_tribe_choices:
+    def start_game(choice):
+        game_manager.reset()
+        if game_manager.current_tribe_choices:
             chosen_tribe = next(
-                (tribe for index, tribe in enumerate(current_tribe_choices.choices, 1) if index == choice), None)
+                (tribe for index, tribe in enumerate(game_manager.current_tribe_choices.choices, 1) if index == choice),
+                None)
             if chosen_tribe:
-                leader = get_leader(chosen_tribe)
-                current_game_state = GameState.initialize(chosen_tribe, leader)
-                current_game_state.previous_situation = "Humble beginnings of the " + chosen_tribe.name
-
-                choices = generate_choices(current_game_state, "single_event")
-
-                current_game_state.situation = choices.situation
-                current_action_choices = NextChoices(choices=choices.choices)
-                current_game_state.current_action_choices = current_action_choices
+                leader = game_manager.get_leader(chosen_tribe)
+                game_manager.initialize(chosen_tribe, leader)
+                game_manager.current_game_state.previous_situation = "Humble beginnings of the " + chosen_tribe.name
+                game_manager.current_game_state.last_outcome = OutcomeType.NEUTRAL
+                game_manager.generate_choices(EventType.SINGLE_EVENT)
 
                 # Unpack the return values from update_game_display
-                tribe_overview, recent_history, current_situation, *action_updates = update_game_display()
+                tribe_overview, recent_history, relationships, current_situation, *action_updates = update_game_display()
 
                 return (
                     gr.update(visible=False),  # Hide tribe selection group
-                    tribe_overview,  # Now includes visibility in update
-                    recent_history,  # Now includes visibility in update
-                    current_situation,  # Now includes visibility in update
+                    tribe_overview,
+                    recent_history,
+                    relationships,
+                    current_situation,
                     *action_updates
                 )
             else:
                 return (
                     gr.update(visible=True),
                     gr.update(visible=False, value="Invalid choice. Please select a number between 1 and 3."),
+                    gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(visible=False),
                     *[gr.update(visible=False)] * 6
@@ -974,9 +884,11 @@ def create_gui():
                 gr.update(visible=False, value="Please generate tribe choices first."),
                 gr.update(visible=False),
                 gr.update(visible=False),
+                gr.update(visible=False),
                 *[gr.update(visible=False)] * 6
             )
 
+    # Set up your Gradio interface here, using the above functions
     with gr.Blocks(title="Fantasy Tribe Game") as app:
         gr.Markdown("# Fantasy Tribe Game")
 
@@ -993,6 +905,7 @@ def create_gui():
                 with gr.Column(scale=1):
                     # Initialize these elements as hidden
                     tribe_overview = gr.Textbox(label="Tribe Overview", lines=10, visible=False)
+                    relationships = gr.Textbox(label="Relationships", lines=5, visible=False)
                     recent_history = gr.Textbox(label="Recent History", lines=5, visible=False)
                 with gr.Column(scale=2):
                     current_situation = gr.Textbox(label="Current Situation", lines=5, visible=False)
@@ -1052,19 +965,19 @@ def create_gui():
             outputs=[settings_message]
         )
 
-        # Click event handlers remain the same
         start_button.click(
-            generate_tribe_choices_gui,
+            generate_tribes,
             outputs=[tribe_choices, tribe_selection]
         )
 
         select_tribe_button.click(
-            select_tribe_and_start_game,
+            start_game,
             inputs=[tribe_selection],
             outputs=[
                 tribe_selection_group,
                 tribe_overview,
                 recent_history,
+                relationships,
                 current_situation,
                 action_button1, action_desc1,
                 action_button2, action_desc2,
@@ -1075,7 +988,8 @@ def create_gui():
         action_button1.click(
             lambda: perform_action(0),
             outputs=[
-                tribe_overview, recent_history, current_situation,
+                tribe_overview, recent_history,
+                relationships, current_situation,
                 action_button1, action_desc1,
                 action_button2, action_desc2,
                 action_button3, action_desc3
@@ -1085,7 +999,8 @@ def create_gui():
         action_button2.click(
             lambda: perform_action(1),
             outputs=[
-                tribe_overview, recent_history, current_situation,
+                tribe_overview, recent_history,
+                relationships, current_situation,
                 action_button1, action_desc1,
                 action_button2, action_desc2,
                 action_button3, action_desc3
@@ -1095,7 +1010,8 @@ def create_gui():
         action_button3.click(
             lambda: perform_action(2),
             outputs=[
-                tribe_overview, recent_history, current_situation,
+                tribe_overview, recent_history,
+                relationships, current_situation,
                 action_button1, action_desc1,
                 action_button2, action_desc2,
                 action_button3, action_desc3
@@ -1115,6 +1031,7 @@ def create_gui():
                 tribe_selection_group,
                 tribe_overview,
                 recent_history,
+                relationships,
                 current_situation,
                 action_button1, action_desc1,
                 action_button2, action_desc2,
@@ -1126,7 +1043,5 @@ def create_gui():
 
 
 if __name__ == "__main__":
-    app = create_gui()
-    app.launch(share=False,
-               debug=True,
-               server_name="0.0.0.0")
+    interface = create_gui()
+    interface.launch()

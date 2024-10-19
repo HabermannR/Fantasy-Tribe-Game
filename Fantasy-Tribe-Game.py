@@ -621,9 +621,12 @@ def get_probability_adjustment(last_outcome: OutcomeType) -> str:
 def generate_new_game_state(game_state: GameState) -> GameStateBase:
     recent_history = game_state.get_recent_short_history(num_events=5)
     tribes_prompt = ""
-    if game_state.turn > 5 and len(game_state.enemies) < 1:
+    enemy_count = sum(1 for tribe in game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.ENEMY)
+    neutral_count = sum(1 for tribe in game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.NEUTRAL)
+
+    if game_state.turn > 5 and enemy_count < 1:
         tribes_prompt += "Add one or two enemy factions"
-    if game_state.turn > 3 and len(game_state.neutrals) < 2:
+    if game_state.turn > 3 and neutral_count < 2:
         tribes_prompt += "Add one or two neutral factions"
 
     messages = [

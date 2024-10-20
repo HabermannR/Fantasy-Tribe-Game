@@ -32,16 +32,16 @@ import json
 import random
 import textwrap
 import copy
+import gradio as gr
 
 from datetime import datetime
 from enum import Enum
 from typing import List, Tuple, Optional
 
-import gradio as gr
-
 from pydantic import BaseModel, Field
-from LLM_manager import LLMContext, Config, LLMProvider
+from LLM_manager import LLMContext, Config, ModelConfig, SummaryModelConfig, LLMProvider, SummaryMode
 
+random.seed(datetime.now().timestamp())
 
 class EnumEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -90,6 +90,9 @@ class NextChoices(BaseModel):
 class NextReactionChoices(BaseModel):
     choices: List[ActionChoice]
     situation: str
+
+class SummaryModel(BaseModel):
+    summary: str
 
 
 class Relationship(BaseModel):
@@ -269,7 +272,7 @@ class GameHistory:
     def get_recent_short_history(self, num_events: int = 5) -> str:
         recent_events = self.history[-num_events - 1:-1][-num_events:]
         return "\n\n".join([
-            f"- {event.event_result_short} (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
+            f"- {event.event_result} (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
             for event in recent_events
         ])
 
@@ -281,7 +284,6 @@ class GameStateBase(BaseModel):
     foreign_tribes: List[ForeignTribeType]
     situation: str
     event_result: str
-    event_result_short: str
 
 
 class GameState(GameStateBase):
@@ -323,8 +325,7 @@ class GameState(GameStateBase):
             leaders=[leader],
             foreign_tribes=[],
             situation="",
-            event_result="",
-            event_result_short=""
+            event_result=""
         )
 
     def update(self, new_state: GameStateBase):
@@ -380,7 +381,7 @@ class GameStateManager:
         self.current_game_state.chosen_action = action
         self.current_game_state.previous_situation = self.current_game_state.situation
         outcome, roll = self.determine_outcome(action.probability)
-        print(f"Debug: Roll = {roll:.2f}, Probability = {action.probability:.2f}")
+        print(f"Debug: Roll = {roll:.2f}, Probability = {action.probability:.2f}, Outcome = {outcome.name}")
         # Handle streak catastrophe
         if self.current_game_state.check_streak_catastrophe():
             outcome = OutcomeType.CATASTROPHE
@@ -403,14 +404,6 @@ class GameStateManager:
         self.save_all_game_states(filename)
         self.current_game_state.turn += 1
 
-
-    def get_current_state(self) -> Optional[GameState]:
-        return self.current_game_state
-
-    def set_current_state(self, state: GameState):
-        self.current_game_state = state
-        self.game_history.add_state(state)
-
     def save_all_game_states(self, filename: str):
         with open(filename, 'w') as f:
             json.dump(self.game_history.history, f, cls=EnumEncoder)
@@ -420,11 +413,8 @@ class GameStateManager:
         story = []
         for state in self.game_history.history:
             story.append(f"=== Turn {state.turn} ===")
-
             story.append(f"Situation: {state.previous_situation}")
-
             story.append(f"Taken action: {state.chosen_action.description}")
-
             outcome = OutcomeType(state.last_outcome).name
             story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
 
@@ -437,10 +427,8 @@ class GameStateManager:
 
         # Convert enum dictionaries to actual enum values
         converted_history = convert_enums(loaded_history)
-
         # Convert each history entry to a GameState object
         history: List[GameState] = [GameState(**state) for state in converted_history]
-
         # Set the current game state to the last item in the history
         self.current_game_state = copy.deepcopy(history[-1])
 
@@ -449,16 +437,14 @@ class GameStateManager:
             self.game_history.add_state(state)
         self.current_game_state.turn += 1
 
-    def generate_tribe_choices(self) -> InitialChoices:
+    def generate_tribe_choices(self, external_choice:str = "") -> InitialChoices:
         # Generate 3 unique combinations of development type and diplomatic stance
-        external_choice = ""
 
         possible_combinations = [
             (dev, stance)
             for dev in DevelopmentType
             for stance in DiplomaticStance
         ]
-
         selected_combinations = random.sample(possible_combinations, 3)
 
         # Get orientation descriptions for each combination
@@ -468,7 +454,7 @@ class GameStateManager:
         ]
         tribe1 = ""
         if external_choice != "":
-            tribe1 = f"- Must be {external_choice}."
+            tribe1 = f"- Must be {external_choice}. Mention the race in the description."
         else:
             tribe1 = f"""- Must be {selected_combinations[0][0].value} in development and {selected_combinations[0][1].value} in diplomacy
         - Should fit the description: {orientations[0]}"""
@@ -497,13 +483,13 @@ class GameStateManager:
     One tribe should consist of {external_choice}.
     For each tribe provide:
     1. A unique tribe name (do not use 'Sylvan')
-    2. A description of the tribe (without mentioning the tribe name, and do not quote the given description directly)
+    2. A description of the tribe without mentioning the tribe name, and do not quote the given description directly, but name the race
     3. Its DevelopmentType
     4. Its DiplomaticStance"""
             }
         ]
 
-        choices = self.llm_context.make_api_call(messages, InitialChoices, max_tokens=2000)
+        choices = self.llm_context.make_story_call(messages, InitialChoices, max_tokens=2000)
 
         if choices:
             self.current_tribe_choices = choices
@@ -529,7 +515,7 @@ class GameStateManager:
             }
         ]
 
-        leader = self.llm_context.make_api_call(messages, Character, max_tokens=2000)
+        leader = self.llm_context.make_story_call(messages, Character, max_tokens=2000)
 
         if leader:
             print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
@@ -566,33 +552,36 @@ class GameStateManager:
 
         choice_type_fields = choice_types[choice_type]
 
-        messages = [
+        context = f"""State: {self.current_game_state.to_context_string()}
+History: {recent_history}
+Previous: {self.current_game_state.previous_situation}
+
+{action_context}"""
+        instruction = f"""{choice_type_fields['instruction']} and add to:
+{self.current_game_state.situation}
+Save a summary in "situation".
+
+Present 3 possible next actions:
+{choice_type_fields['extra']}
+Each has a caption, description, and probability of success 
+Include consequences and strategic considerations in the description.
+{prob_adjustment}
+- One choice should have high probability
+- Include at least one aggressive option (probability based on tribe info)"""
+
+        summary = self.llm_context.get_summary(context)
+
+        messages2 = [
             {
                 "role": "system",
                 "content": "You are a game master for a tribal fantasy strategy game. Output answers as JSON"
             },
             {
                 "role": "user",
-                "content": f"""State: {self.current_game_state.to_context_string()}
-    History: {recent_history}
-    Previous: {self.current_game_state.previous_situation}
+                "content": summary + instruction}]
 
-    {action_context}
-
-    {choice_type_fields['instruction']} and add to:
-    {self.current_game_state.situation}
-    Save a summary in "situation".
-
-    Present 3 possible next actions:
-    {choice_type_fields['extra']}
-    - Include consequences and strategic considerations
-    {prob_adjustment}
-    - One choice should have high probability
-    - Include at least one aggressive option (probability based on tribe info)"""
-            }
-        ]
-
-        next_choices = self.llm_context.make_api_call(messages, NextReactionChoices, max_tokens=2000)
+        #next_choices = self.llm_context.make_api_call(messages1, NextReactionChoices, max_tokens=2000)
+        next_choices = self.llm_context.make_story_call(messages2, NextReactionChoices, max_tokens=2000)
         if next_choices:
             self.current_game_state.situation = next_choices.situation
             self.current_game_state.current_action_choices = NextChoices(choices=next_choices.choices)
@@ -620,23 +609,15 @@ class GameStateManager:
         if self.current_game_state.turn > 3 and neutral_count < 2:
             tribes_prompt += "* Add one or two neutral factions\n"
 
-        messages = [
-            {
-                "role": "system",
-                "content": "You are the game master for a text-based strategic game, where the player rules over a tribe in a fantasy setting. Your task is to update the game state based on the player's actions and their outcomes."
-            },
-            {
-                "role": "user",
-                "content": f"""State: {self.current_game_state.to_context_string()}
+        context = f"""State: {self.current_game_state.to_context_string()}
 Development: {self.current_game_state.tribe.development.value}
 Stance: {self.current_game_state.tribe.stance.value}
 
 History: {recent_history}
 Previous: {self.current_game_state.previous_situation}
 Action: {self.current_game_state.chosen_action.caption} - {self.current_game_state.chosen_action.description}
-Outcome: {self.current_game_state.last_outcome.name}
-
-Required Updates:
+Outcome: {self.current_game_state.last_outcome.name}"""
+        instructions = f"""Required Updates:
 
 1. Leaders (max 5):
    - Update names, titles and relationships, both to tribe leaders as well as to leaders of foreign tribes
@@ -653,26 +634,34 @@ Required Updates:
    - Consider development/stance compatibility
    {tribes_prompt}
 4. Event Results:
-   - 2-3 paragraphs narrative (event_result)
-   - Brief summary (event_result_short)
+   - 2 paragraphs narrative (event_result)
    - Events may continue
 
 Maintain consistency with game state, action outcomes, and existing relationships."""
+        summary = self.llm_context.get_summary(context)
+        messages = [
+            {
+                "role": "system",
+                "content": "You are the game master for a text-based strategic game, where the player rules over a tribe in a fantasy setting. Your task is to update the game state based on the player's actions and their outcomes."
+            },
+            {
+                "role": "user",
+                "content": summary + instructions
             }
         ]
 
-        new_state = self.llm_context.make_api_call(messages, GameStateBase, max_tokens=3000)
+        new_state = self.llm_context.make_story_call(messages, GameStateBase, max_tokens=5000)
         self.current_game_state.update(new_state)
 
 
     @staticmethod
     def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
-        roll = random.random()
+        roll = round(random.random(),2)
         # roll = 0.0
         # roll = 1.0
-        if roll > 0.95:
+        if roll >= 0.95:
             return OutcomeType.CATASTROPHE, roll
-        if roll < probability:
+        if roll <= probability:
             return OutcomeType.POSITIVE, roll
         elif roll < (probability + (1 - probability) / 2):
             return OutcomeType.NEUTRAL, roll
@@ -718,7 +707,7 @@ def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance
 
 
 def create_gui():
-    config = Config.from_env()
+    config = Config.default_config()
     # Use the function to initialize the LLMContext
     llm_context = LLMContext(config)
     game_manager = GameStateManager(llm_context)
@@ -812,27 +801,9 @@ def create_gui():
                 *[gr.update(visible=False)] * 6
             )
 
-    def save_settings(provider_str, model, url):
-        try:
-            # Convert string to enum
-            provider = LLMProvider(provider_str.lower())
-            # Update config
-            config.LLM_PROVIDER = provider
-
-            llm_context.update(config)
-            # Store additional settings that might be needed by specific strategies
-            if hasattr(config, 'openai_model'):
-                config.openai_model = model
-            if hasattr(config, 'local_url'):
-                config.local_url = url
-
-            return f"Settings saved: Provider: {provider.value}, Model: {model}, URL: {url}"
-        except ValueError as e:
-            return f"Error saving settings: {str(e)}"
-
-    def generate_tribes():
+    def generate_tribes(theme):
         game_manager.reset()
-        game_manager.generate_tribe_choices()
+        game_manager.generate_tribe_choices(theme)
         if game_manager.current_tribe_choices:
             result = ""
             for number, choice in enumerate(game_manager.current_tribe_choices.choices):
@@ -895,7 +866,22 @@ def create_gui():
         # Game Tab
         with gr.Tab("Game"):
             # Create tribe selection group
+
             with gr.Group() as tribe_selection_group:
+                race_theme = gr.Dropdown(
+                    choices=["", "Men", "High Elves ", "Wood Elves", "Dark Elves", "Dwarves", "Halflings", "Orcs",
+                             "Goblins", "Gnomes", "Trolls", "Ogres", "Kobolds", "Skaven", "Vampires", "Lycanthropes",
+                             "Giants", "Valkyries", "Norns", "Nephilim", "Fairies", "Sprites", "Pixies", "Changelings",
+                             "Angels", "Demons", "Celestials", "Fauns", "Ghuls", "Ifrits", "Unicorns", "Griffin",
+                             "Wyverns", "Centaurs", "Minotaurs", "Merfolk", "Naga", "Djinn", "Aasimar", "Tieflings",
+                             "Dragonborn", "Kitsune", "Tengu", "Sylphs", "Dryads", "Nymphs", "Harpies", "Satyrs",
+                             "Phoenix", "Basilisks", "Chimeras", "Gryphons", "Liches", "Elementals", "Golems",
+                             "Gargoyles", "Wendigo", "Yokai", "Rakshasa", "Selkies", "Banshees", "Revenants",
+                             "Succubi/Incubi", "Doppelgangers", "Wraiths", "Fomorians", "Firbolg", "Lizardfolk",
+                             "Kenku", "Aarakocra", "Tabaxi", "Yuan-ti", "Genasi", "Warforged", "Automata"],
+                    value="",
+                    label="Choose theme to influence race generation"
+                )
                 start_button = gr.Button("Generate Tribe Choices")
                 tribe_choices = gr.Textbox(label="Available Tribes", lines=10)
                 tribe_selection = gr.Radio(choices=[1, 2, 3], label="Select your tribe", visible=False)
@@ -923,50 +909,153 @@ def create_gui():
 
             message_display = gr.Textbox(label="System Messages", lines=2)
 
-            # Add Settings Tab
+        # Add Settings Tab
         with gr.Tab("Settings"):
             with gr.Group():
-                gr.Markdown("## LLM Configuration")
-                provider_dropdown = gr.Dropdown(
+                gr.Markdown("## Story LLM Configuration")
+                story_provider_dropdown = gr.Dropdown(
                     choices=[provider.value for provider in LLMProvider],
-                    value=config.LLM_PROVIDER.value,
-                    label="LLM Provider"
+                    value=config.story_config.provider.value,
+                    label="Story LLM Provider"
                 )
-                model_dropdown = gr.Dropdown(
-                    choices=["gpt-4o-mini", "gpt-4o"],
-                    value=getattr(config, 'openai_model', "gpt-4o-mini"),
-                    label="OpenAI Model",
+                story_model_dropdown = gr.Dropdown(
+                    choices=["claude-3-5-sonnet-20240620"],
+                    value="claude-3-5-sonnet-20240620",
+                    label="Story Model (Anthropic)",
+                    visible=config.story_config.provider == LLMProvider.ANTHROPIC
                 )
-                local_url_input = gr.Textbox(
-                    value=getattr(config, 'local_url', "http://127.0.0.1:1234/v1"),
-                    label="Local API URL",
-                    placeholder="http://127.0.0.1:1234/v1"
+                story_model_openai_dropdown = gr.Dropdown(
+                    choices=["gpt-4o", "gpt-4o-mini"],
+                    value="gpt-4o",
+                    label="Story Model (OpenAI)",
+                    visible=config.story_config.provider == LLMProvider.OPENAI
                 )
-                settings_save_btn = gr.Button("Save Settings")
-                settings_message = gr.Textbox(label="Settings Status", interactive=False)
+                story_model_local_input = gr.Textbox(
+                    value=config.story_config.model_name if config.story_config.provider == LLMProvider.LOCAL else "Qwen2.5-14B-Instruct:latest",
+                    label="Story Model (Local)",
+                    placeholder="Enter model name",
+                    visible=config.story_config.provider == LLMProvider.LOCAL
+                )
+                story_local_url_input = gr.Textbox(
+                    value=config.story_config.local_url or "http://127.0.0.1:1234/v1",
+                    label="Story Local API URL",
+                    placeholder="http://127.0.0.1:1234/v1",
+                    visible=config.story_config.provider == LLMProvider.LOCAL
+                )
 
-                # Add visibility rules for model and URL inputs
-                def update_input_visibility(provider):
-                    return {
-                        model_dropdown: gr.update(visible=provider.lower() == "openai"),
-                        local_url_input: gr.update(visible=provider.lower() == "local")
-                    }
-
-                provider_dropdown.change(
-                    update_input_visibility,
-                    inputs=[provider_dropdown],
-                    outputs=[model_dropdown, local_url_input]
+            with gr.Group():
+                gr.Markdown("## Summary LLM Configuration")
+                summary_provider_dropdown = gr.Dropdown(
+                    choices=[provider.value for provider in LLMProvider],
+                    value=config.summary_config.provider.value,
+                    label="Summary LLM Provider"
+                )
+                summary_model_dropdown = gr.Dropdown(
+                    choices=["claude-3-5-sonnet-20240620"],
+                    value="claude-3-5-sonnet-20240620",
+                    label="Summary Model (Anthropic)",
+                    visible=config.summary_config.provider == LLMProvider.ANTHROPIC
+                )
+                summary_model_openai_dropdown = gr.Dropdown(
+                    choices=["gpt-4o", "gpt-4o-mini"],
+                    value="gpt-4o-mini",
+                    label="Summary Model (OpenAI)",
+                    visible=config.summary_config.provider == LLMProvider.OPENAI
+                )
+                summary_model_local_input = gr.Textbox(
+                    value=config.summary_config.model_name if config.summary_config.provider == LLMProvider.LOCAL else "Qwen2.5-14B-Instruct:latest",
+                    label="Summary Model (Local)",
+                    placeholder="Enter model name",
+                    visible=config.summary_config.provider == LLMProvider.LOCAL
+                )
+                summary_local_url_input = gr.Textbox(
+                    value=config.summary_config.local_url or "http://127.0.0.1:1234/v1",
+                    label="Summary Local API URL",
+                    placeholder="http://127.0.0.1:1234/v1",
+                    visible=config.summary_config.provider == LLMProvider.LOCAL
+                )
+                summary_mode_dropdown = gr.Dropdown(
+                    choices=[mode.value for mode in SummaryMode],
+                    value=config.summary_config.mode.value,
+                    label="Summary Mode"
                 )
 
-        # Connect settings events
-        settings_save_btn.click(
-            save_settings,
-            inputs=[provider_dropdown, model_dropdown, local_url_input],
-            outputs=[settings_message]
-        )
+            settings_save_btn = gr.Button("Save Settings")
+            settings_message = gr.Textbox(label="Settings Status", interactive=False)
+
+            # Add visibility rules for model and URL inputs
+            def update_story_input_visibility(provider):
+                return {
+                    story_model_dropdown: gr.update(visible=provider == LLMProvider.ANTHROPIC.value),
+                    story_model_openai_dropdown: gr.update(visible=provider == LLMProvider.OPENAI.value),
+                    story_model_local_input: gr.update(visible=provider == LLMProvider.LOCAL.value),
+                    story_local_url_input: gr.update(visible=provider == LLMProvider.LOCAL.value)
+                }
+
+            story_provider_dropdown.change(
+                update_story_input_visibility,
+                inputs=[story_provider_dropdown],
+                outputs=[story_model_dropdown, story_model_openai_dropdown, story_model_local_input,
+                         story_local_url_input]
+            )
+
+            def update_summary_input_visibility(provider):
+                return {
+                    summary_model_dropdown: gr.update(visible=provider == LLMProvider.ANTHROPIC.value),
+                    summary_model_openai_dropdown: gr.update(visible=provider == LLMProvider.OPENAI.value),
+                    summary_model_local_input: gr.update(visible=provider == LLMProvider.LOCAL.value),
+                    summary_local_url_input: gr.update(visible=provider == LLMProvider.LOCAL.value)
+                }
+
+            summary_provider_dropdown.change(
+                update_summary_input_visibility,
+                inputs=[summary_provider_dropdown],
+                outputs=[summary_model_dropdown, summary_model_openai_dropdown, summary_model_local_input,
+                         summary_local_url_input]
+            )
+
+            # Function to save settings
+            def save_settings(story_provider, story_model_anthropic, story_model_openai, story_model_local,
+                              story_local_url,
+                              summary_provider, summary_model_anthropic, summary_model_openai, summary_model_local,
+                              summary_local_url, summary_mode):
+                story_model = story_model_anthropic if story_provider == LLMProvider.ANTHROPIC.value else \
+                    story_model_openai if story_provider == LLMProvider.OPENAI.value else \
+                        story_model_local
+                summary_model = summary_model_anthropic if summary_provider == LLMProvider.ANTHROPIC.value else \
+                    summary_model_openai if summary_provider == LLMProvider.OPENAI.value else \
+                        summary_model_local
+
+                new_config = Config(
+                    story_config=ModelConfig(
+                        provider=LLMProvider(story_provider),
+                        model_name=story_model,
+                        local_url=story_local_url if story_provider == LLMProvider.LOCAL.value else None
+                    ),
+                    summary_config=SummaryModelConfig(
+                        provider=LLMProvider(summary_provider),
+                        model_name=summary_model,
+                        mode=SummaryMode(summary_mode),
+                        local_url=summary_local_url if summary_provider == LLMProvider.LOCAL.value else None
+                    )
+                )
+                llm_context.update(new_config)
+                return "Settings saved successfully!"
+
+            settings_save_btn.click(
+                save_settings,
+                inputs=[story_provider_dropdown, story_model_dropdown, story_model_openai_dropdown,
+                        story_model_local_input, story_local_url_input,
+                        summary_provider_dropdown, summary_model_dropdown, summary_model_openai_dropdown,
+                        summary_model_local_input, summary_local_url_input,
+                        summary_mode_dropdown],
+                outputs=[settings_message]
+            )
+
 
         start_button.click(
             generate_tribes,
+            inputs=[race_theme],  # Add the dropdown as input
             outputs=[tribe_choices, tribe_selection]
         )
 

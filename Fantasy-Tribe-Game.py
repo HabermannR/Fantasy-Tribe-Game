@@ -270,7 +270,7 @@ class GameHistory:
         return "\n\n".join(formatted_events)
 
     def get_recent_short_history(self, num_events: int = 5) -> str:
-        recent_events = self.history[-num_events - 1:-1][-num_events:]
+        recent_events = self.history[-num_events:]
         return "\n\n".join([
             f"- {event.event_result} (Outcome: {OutcomeType(event.last_outcome).name if event.last_outcome else 'N/A'})"
             for event in recent_events
@@ -529,7 +529,7 @@ class GameStateManager:
         return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
 
     def generate_choices(self, choice_type: EventType) -> None:
-        recent_history = self.game_history.get_recent_short_history(num_events=3)
+        recent_history = self.game_history.get_recent_short_history(num_events=5)
         prob_adjustment = self.get_probability_adjustment()
 
         action_context = ""
@@ -614,10 +614,13 @@ Development: {self.current_game_state.tribe.development.value}
 Stance: {self.current_game_state.tribe.stance.value}
 
 History: {recent_history}
-Previous: {self.current_game_state.previous_situation}
-Action: {self.current_game_state.chosen_action.caption} - {self.current_game_state.chosen_action.description}
-Outcome: {self.current_game_state.last_outcome.name}"""
-        instructions = f"""Required Updates:
+{self.current_game_state.previous_situation}
+"""
+        instructions = f"""
+Last situation: {self.current_game_state.previous_situation}
+Action chosen by the player: {self.current_game_state.chosen_action.caption} - {self.current_game_state.chosen_action.description}
+Outcome: {self.current_game_state.last_outcome.name}
+Required Updates:
 
 1. Leaders (max 5):
    - Update names, titles and relationships, both to tribe leaders as well as to leaders of foreign tribes

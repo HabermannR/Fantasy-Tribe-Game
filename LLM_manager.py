@@ -257,11 +257,11 @@ class LLMContext:
         messages = [
             {
                 "role": "system",
-                "content": "Take this text from a fantasy setting and provide a summary of its content"
+                "content": "Take this text from a fantasy setting and provide a detailed and correct summary of its content"
             },
             {
                 "role": "user",
-                "content": f"Summarize this content: {context}"
+                "content": f"Summarize this content into at least 4 paragraphs: {context}"
             }
         ]
 

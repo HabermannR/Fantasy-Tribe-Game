@@ -3,6 +3,7 @@ import time
 from typing import Dict, Any, TypeVar, Type, List, Optional, Union
 from pydantic import BaseModel
 from enum import Enum
+from Language import Language
 
 from openai import OpenAI
 import anthropic
@@ -39,7 +40,6 @@ class ModelConfig:
         self.model_name = model_name
         self.local_url = local_url
 
-
 class SummaryModelConfig(ModelConfig):
     def __init__(self,
                  provider: LLMProvider,
@@ -49,18 +49,19 @@ class SummaryModelConfig(ModelConfig):
         super().__init__(provider, model_name, local_url)
         self.mode = mode
 
-
 class Config:
     def __init__(self,
                  story_config: ModelConfig,
-                 summary_config: SummaryModelConfig):
+                 summary_config: SummaryModelConfig,
+                 language: Language = Language.ENGLISH):
         self.story_config = story_config
         self.summary_config = summary_config
+        self.language = language
         self.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
     @classmethod
-    def default_config(cls):
+    def default_config(cls, language: Language = Language.ENGLISH):
         return cls(
             story_config=ModelConfig(
                 provider=LLMProvider.ANTHROPIC,
@@ -70,11 +71,14 @@ class Config:
                 provider=LLMProvider.OPENAI,
                 model_name="gpt-4o-mini",
                 mode=SummaryMode.JSON
-            )
+            ),
+            language=language
         )
 
     @classmethod
-    def local_config(cls, summary_mode: SummaryMode = SummaryMode.JSON):
+    def local_config(cls,
+                     summary_mode: SummaryMode = SummaryMode.JSON,
+                     language: Language = Language.ENGLISH):
         return cls(
             story_config=ModelConfig(
                 provider=LLMProvider.LOCAL,
@@ -86,13 +90,56 @@ class Config:
                 model_name="Qwen1.5-7B-Chat:latest",
                 mode=summary_mode,
                 local_url="http://127.0.0.1:1235/v1"
-            )
+            ),
+            language=language
         )
 
 
 def create_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
     schema = model.model_json_schema()
     return {"type": "json_schema", "json_schema": {"schema": schema}}
+
+
+class SystemPrompts:
+    ENGLISH_PROMPT = """"""
+
+    GERMAN_PROMPT = """. When generating JSON responses, keep the field names in English but provide the content/values in German.
+For example:
+{
+    "summary": "Der Hauptcharakter beginnt seine Reise...",
+    "mainCharacters": ["König Arthur", "Merlin", "Guinevere"],
+    "setting": "Mittelalterliches England"
+}"""
+
+    @staticmethod
+    def get_prompt(language: Language) -> str:
+        if language == Language.ENGLISH:
+            return SystemPrompts.ENGLISH_PROMPT
+        elif language == Language.GERMAN:
+            return SystemPrompts.GERMAN_PROMPT
+        else:
+            raise ValueError(f"Unsupported language: {language}")
+
+    @staticmethod
+    def inject_system_prompt(messages: List[Dict[str, str]], language: Language) -> List[Dict[str, str]]:
+        """
+        Injects or replaces the system prompt in the messages list based on the specified language.
+
+        Args:
+            messages: List of message dictionaries
+            language: Language enum specifying the desired language
+
+        Returns:
+            List of messages with the appropriate system prompt
+        """
+        system_prompt = SystemPrompts.get_prompt(language)
+
+        # If there is a system message, replace it while maintaining order
+        return [
+            {"role": "system", "content": msg["content"] + system_prompt} if msg["role"] == "system"
+            else msg
+            for msg in messages
+        ]
 
 
 class LLMStrategy:
@@ -242,6 +289,7 @@ class LLMContext:
 
     def make_story_call(self, messages: List[Dict[str, str]], response_model: Type[T],
                         max_tokens: Optional[int] = 1500) -> T:
+        messages = SystemPrompts.inject_system_prompt(messages, self.config.language)
         return self._story_strategy.make_api_call(messages, response_model, max_tokens)
 
     def make_summary_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
@@ -254,10 +302,15 @@ class LLMContext:
         Get a summary of the provided context using the summary model configuration.
         Returns either a string (RAW mode) or SummaryModel (JSON mode)
         """
+        systemprompt = {
+            Language.ENGLISH: "Take this text from a fantasy setting and provide a detailed and correct summary of its content",
+            Language.GERMAN: "Take this text from a fantasy setting and provide a detailed and correct summary of its content in German"
+        }.get(self.config.language,
+              "Take this text from a fantasy setting and provide a detailed and correct summary of its content")
         messages = [
             {
                 "role": "system",
-                "content": "Take this text from a fantasy setting and provide a detailed and correct summary of its content"
+                "content": systemprompt
             },
             {
                 "role": "user",

@@ -39,6 +39,7 @@ from enum import Enum
 from typing import List, Tuple, Optional
 
 from pydantic import BaseModel, Field
+from Language import Language, translations
 from LLM_manager import LLMContext, Config, ModelConfig, SummaryModelConfig, LLMProvider, SummaryMode
 
 random.seed(datetime.now().timestamp())
@@ -147,56 +148,59 @@ class InitialChoices(BaseModel):
 
 class TextFormatter:
     @staticmethod
-    def get_sentiment(opinion: int) -> str:
+    def get_sentiment(opinion: int, language: Language) -> str:
         if opinion >= 90:
-            return "devoted"
+            return "devoted" if language == Language.ENGLISH else "ergeben"
         elif opinion >= 70:
-            return "strongly positive"
+            return "strongly positive" if language == Language.ENGLISH else "sehr positiv"
         elif opinion >= 40:
-            return "favorable"
+            return "favorable" if language == Language.ENGLISH else "günstig"
         elif opinion >= 10:
-            return "somewhat positive"
+            return "somewhat positive" if language == Language.ENGLISH else "etwas positiv"
         elif opinion > -10:
-            return "neutral"
+            return "neutral" if language == Language.ENGLISH else "neutral"
         elif opinion >= -40:
-            return "somewhat negative"
+            return "somewhat negative" if language == Language.ENGLISH else "etwas negativ"
         elif opinion >= -70:
-            return "unfavorable"
+            return "unfavorable" if language == Language.ENGLISH else "ungünstig"
         elif opinion >= -90:
-            return "strongly negative"
+            return "strongly negative" if language == Language.ENGLISH else "sehr negativ"
         else:
-            return "hostile"
+            return "hostile" if language == Language.ENGLISH else "feindselig"
 
     @staticmethod
-    def format_tribe_description(tribe: TribeType, leaders: List[Character], relation: bool) -> str:
-        tribe_type = get_tribe_orientation(tribe.development, tribe.stance)
+    def format_tribe_description(tribe: TribeType, leaders: List[Character], relation: bool, language: Language) -> str:
+        tribe_type = get_tribe_orientation(tribe.development, tribe.stance, language)
         text = f"""{tribe.name}
 {tribe_type}
 
 {tribe.description}
 
-Leaders:"""
+{"Leaders:" if language == Language.ENGLISH else "Anführer:"}"""
 
         for leader in leaders:
-            text += TextFormatter._format_leader(leader, relation)
+            text += TextFormatter._format_leader(leader, relation, language)
         return text
 
     @staticmethod
-    def _format_leader(leader: Character, relation: bool) -> str:
+    def _format_leader(leader: Character, relation: bool, language: Language) -> str:
         text = f"\n  • {leader.title}: {leader.name}"
         if leader.relationships and relation:
-            text += "\n    Relationships:"
+            text += "\n    " + ("Relationships:" if language == Language.ENGLISH else "Beziehungen:")
             for rel in leader.relationships:
-                sentiment = TextFormatter.get_sentiment(rel.opinion)
-                text += f"\n      - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})"
+                sentiment = TextFormatter.get_sentiment(rel.opinion, language)
+                if language == Language.ENGLISH:
+                    text += f"\n      - {rel.type} relationship with  {rel.target} , {sentiment}: {rel.opinion}"
+                elif language == Language.GERMAN:
+                    text += f"\n      - Beziehung zu {rel.target}: {rel.type}, {sentiment}: {rel.opinion}"
         return text
 
     @staticmethod
-    def format_foreign_tribes(foreign_tribes: List[ForeignTribeType], relation: bool) -> str:
+    def format_foreign_tribes(foreign_tribes: List[ForeignTribeType], relation: bool, language: Language) -> str:
         if not foreign_tribes:
             return ""
 
-        text = "\n\nForeign Tribes:"
+        text = "\n\n" + ("Foreign Tribes:" if language == Language.ENGLISH else "Fremde Stämme:")
         status_order = [DiplomaticStatus.ALLY, DiplomaticStatus.NEUTRAL, DiplomaticStatus.ENEMY]
         tribes_by_status = {status: [] for status in status_order}
 
@@ -207,29 +211,30 @@ Leaders:"""
             if tribes_by_status[status]:
                 text += f"\n\n{status.value.title()}:"
                 for tribe in tribes_by_status[status]:
-                    text += TextFormatter._format_foreign_tribe(tribe, relation)
+                    text += TextFormatter._format_foreign_tribe(tribe, relation, language)
         return text
 
     @staticmethod
-    def _format_foreign_tribe(tribe: ForeignTribeType, relation: bool) -> str:
-        foreign_type = get_tribe_orientation(tribe.development, tribe.stance)
+    def _format_foreign_tribe(tribe: ForeignTribeType, relation: bool, language: Language) -> str:
+        foreign_type = get_tribe_orientation(tribe.development, tribe.stance, language)
         text = f"\n\n{tribe.name}\n  {foreign_type}\n{tribe.description}"
 
         if tribe.leaders:
-            text += "\nLeaders:"
+            text += "\n" + ("Leaders:" if language == Language.ENGLISH else "Anführer:")
             for leader in tribe.leaders:
-                text += TextFormatter._format_leader(leader, relation)
+                text += TextFormatter._format_leader(leader, relation, language)
         return text
 
     @staticmethod
-    def export_tribe_only(tribe: TribeType, leaders: List[Character], foreign_tribes: List[ForeignTribeType]) -> str:
-        text = TextFormatter.format_tribe_description(tribe, leaders, False)
-        text += TextFormatter.format_foreign_tribes(foreign_tribes, False)
+    def export_tribe_only(tribe: TribeType, leaders: List[Character],
+                          foreign_tribes: List[ForeignTribeType], language: Language) -> str:
+        text = TextFormatter.format_tribe_description(tribe, leaders, False, language)
+        text += TextFormatter.format_foreign_tribes(foreign_tribes, False, language)
         return text
 
     @staticmethod
     def export_relationships_only(leaders: List[Character],
-                                  foreign_tribes: List[ForeignTribeType]) -> str:
+                                  foreign_tribes: List[ForeignTribeType], language: Language) -> str:
         text = ""
 
         # Player tribe relationships
@@ -237,18 +242,24 @@ Leaders:"""
             if leader.relationships:
                 text += f"\n{leader.name} ({leader.title}):\n"
                 for rel in leader.relationships:
-                    sentiment = TextFormatter.get_sentiment(rel.opinion)
-                    text += f"  - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})\n"
+                    sentiment = TextFormatter.get_sentiment(rel.opinion, language)
+                    if language == Language.ENGLISH:
+                        text += f"  - {rel.type} relationship with  {rel.target} , {sentiment}\n"
+                    elif language == Language.GERMAN:
+                        text += f"  - Beziehung zu {rel.target}: {rel.type}, {sentiment}\n"
 
         # Foreign tribe relationships
         for foreign_tribe in foreign_tribes:
             if foreign_tribe.leaders:
                 for leader in foreign_tribe.leaders:
                     if leader.relationships:
-                        text += f"\n{leader.name} ({leader.title}) from {foreign_tribe.name}:\n"
+                        text += f"\n{leader.name} ({leader.title}) {'from' if language == Language.ENGLISH else 'von'} {foreign_tribe.name}:\n"
                         for rel in leader.relationships:
-                            sentiment = TextFormatter.get_sentiment(rel.opinion)
-                            text += f"  - {rel.type} relationship with {rel.target} ({sentiment}, {rel.opinion})\n"
+                            sentiment = TextFormatter.get_sentiment(rel.opinion, language)
+                            if language == Language.ENGLISH:
+                                text += f"  - {rel.type} relationship with  {rel.target} , {sentiment}\n"
+                            elif language == Language.GERMAN:
+                                text += f"  - Beziehung zu {rel.target}: {rel.type}, {sentiment}\n"
 
         return text
 
@@ -261,11 +272,11 @@ class GameHistory:
     def add_state(self, state: 'GameState'):
         self.history.append(copy.deepcopy(state))
 
-    def get_recent_history(self) -> str:
+    def get_recent_history(self, language: Language) -> str:
         formatted_events = []
         if self.history:
             for event in reversed(self.history):
-                turn_header = f"=== Turn {event.turn} ==="
+                turn_header = f"=== Turn {event.turn} ===" if language == Language.ENGLISH else f"=== Runde {event.turn} ==="
                 formatted_events.extend([turn_header, event.event_result])
         return "\n\n".join(formatted_events)
 
@@ -305,17 +316,17 @@ class GameState(GameStateBase):
     def add_action_set(self, actions: List[str]):
         self.action_history.add_action_set(actions)
 
-    def to_context_string(self) -> str:
-        tribe_text = self.text_formatter.format_tribe_description(self.tribe, self.leaders, True)
-        foreign_tribes_text = self.text_formatter.format_foreign_tribes(self.foreign_tribes, True)
+    def to_context_string(self, language) -> str:
+        tribe_text = self.text_formatter.format_tribe_description(self.tribe, self.leaders, True, language)
+        foreign_tribes_text = self.text_formatter.format_foreign_tribes(self.foreign_tribes, True, language)
         return tribe_text + foreign_tribes_text
 
-    def tribe_string(self) -> str:
-        text = self.text_formatter.export_tribe_only(self.tribe, self.leaders, self.foreign_tribes)
+    def tribe_string(self, language) -> str:
+        text = self.text_formatter.export_tribe_only(self.tribe, self.leaders, self.foreign_tribes, language)
         return text
 
-    def relationship_string(self) -> str:
-        text = self.text_formatter.export_relationships_only(self.leaders, self.foreign_tribes)
+    def relationship_string(self, language) -> str:
+        text = self.text_formatter.export_relationships_only(self.leaders, self.foreign_tribes, language)
         return text
 
     @classmethod
@@ -362,11 +373,12 @@ class GameState(GameStateBase):
 
 
 class GameStateManager:
-    def __init__(self, llm_context: LLMContext):
+    def __init__(self, llm_context: LLMContext, language: Language = Language.ENGLISH):
         self.current_game_state: Optional[GameState] = None
         self.game_history = GameHistory()
         self.llm_context = llm_context
         self.current_tribe_choices = None
+        self.language = language
 
     def reset(self):
         self.current_game_state = None
@@ -449,7 +461,7 @@ class GameStateManager:
 
         # Get orientation descriptions for each combination
         orientations = [
-            get_tribe_orientation(dev_type, stance)
+            get_tribe_orientation(dev_type, stance, self.language)
             for dev_type, stance in selected_combinations
         ]
         tribe1 = ""
@@ -495,7 +507,7 @@ class GameStateManager:
             self.current_tribe_choices = choices
             print("\n=== Available Tribe Choices ===")
             for number, (choice, (dev_type, stance)) in enumerate(zip(choices.choices, selected_combinations)):
-                tribe_type = get_tribe_orientation(dev_type, stance)
+                tribe_type = get_tribe_orientation(dev_type, stance, self.language)
                 print(f"\n{number}. {choice.name}, {tribe_type}")
                 print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
                                     subsequent_indent="   "))
@@ -552,26 +564,28 @@ class GameStateManager:
 
         choice_type_fields = choice_types[choice_type]
 
-        context = f"""State: {self.current_game_state.to_context_string()}
+        context = f"""State: {self.current_game_state.to_context_string(self.language)}
 History: {recent_history}
 Previous: {self.current_game_state.previous_situation}
 
 {action_context}"""
-        instruction = f"""{choice_type_fields['instruction']} and add to:
+        instruction = f"""
+{choice_type_fields['instruction']} and add to:
 {self.current_game_state.situation}
 Save a summary in "situation".
 
 Present 3 possible next actions:
 {choice_type_fields['extra']}
 Each has a caption, description, and probability of success 
-Include consequences and strategic considerations in the description.
+Weave implications and broader context into the description organically, 
+allowing the player to infer consequences and strategic elements without explicit statements.
 {prob_adjustment}
 - One choice should have high probability
 - Include at least one aggressive option (probability based on tribe info)"""
 
         summary = self.llm_context.get_summary(context)
 
-        messages2 = [
+        messages = [
             {
                 "role": "system",
                 "content": "You are a game master for a tribal fantasy strategy game. Output answers as JSON"
@@ -580,8 +594,7 @@ Include consequences and strategic considerations in the description.
                 "role": "user",
                 "content": summary + instruction}]
 
-        #next_choices = self.llm_context.make_api_call(messages1, NextReactionChoices, max_tokens=2000)
-        next_choices = self.llm_context.make_story_call(messages2, NextReactionChoices, max_tokens=2000)
+        next_choices = self.llm_context.make_story_call(messages, NextReactionChoices, max_tokens=2000)
         if next_choices:
             self.current_game_state.situation = next_choices.situation
             self.current_game_state.current_action_choices = NextChoices(choices=next_choices.choices)
@@ -609,7 +622,7 @@ Include consequences and strategic considerations in the description.
         if self.current_game_state.turn > 3 and neutral_count < 2:
             tribes_prompt += "* Add one or two neutral factions\n"
 
-        context = f"""State: {self.current_game_state.to_context_string()}
+        context = f"""State: {self.current_game_state.to_context_string(self.language)}
 Development: {self.current_game_state.tribe.development.value}
 Stance: {self.current_game_state.tribe.stance.value}
 
@@ -678,35 +691,63 @@ Maintain consistency with game state, action outcomes, and existing relationship
             weights=[0.2, 0.4, 0.4], k=1)[0]
 
 
-def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance) -> str:
+def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance, language: Language) -> str:
     """
     Get the orientation-specific description for a tribe based on their development path and diplomatic stance.
 
     Args:
         development (Development): The tribe's development focus (magical, hybrid, or practical)
         stance (DiplomaticStance): The tribe's diplomatic stance
+        language (Language): The language of the UI
     """
     if development == DevelopmentType.MAGICAL:
         if stance == DiplomaticStance.PEACEFUL:
-            return "Mystic sages who commune with natural forces"
+            if language == Language.ENGLISH:
+                return "Mystic sages who commune with the very essence of nature"
+            if language == Language.GERMAN:
+                return "Mystische Weise, die mit dem Wesen der Natur in Verbindung stehen"
         elif stance == DiplomaticStance.NEUTRAL:
-            return "Pragmatic mages who balance power and wisdom"
+            if language == Language.ENGLISH:
+                return "Arcane scholars who balance the powers of magic and wisdom"
+            if language == Language.GERMAN:
+                return "Arkane Gelehrte, die die Kräfte der Magie und Weisheit im Gleichgewicht halten"
         else:  # AGGRESSIVE
-            return "Battle-mages who harness destructive magic"
+            if language == Language.ENGLISH:
+                return "Battle-mages who wield the raw forces of destructive magic"
+            if language == Language.GERMAN:
+                return "Kampfmagier, die die rohen Kräfte zerstörerischer Magie beherrschen"
     elif development == DevelopmentType.HYBRID:
         if stance == DiplomaticStance.PEACEFUL:
-            return "Technomancers who blend science and spirituality"
+            if language == Language.ENGLISH:
+                return "Technomancers who weave together the threads of science and spirit"
+            if language == Language.GERMAN:
+                return "Technomanten, die die Fäden von Wissenschaft und Geist verweben"
         elif stance == DiplomaticStance.NEUTRAL:
-            return "Arcane engineers who merge magic with technology"
+            if language == Language.ENGLISH:
+                return "Arcane engineers who forge marvels of magic and machinery"
+            if language == Language.GERMAN:
+                return "Arkane Ingenieure, die Wunderwerke aus Magie und Maschinerie erschaffen"
         else:  # AGGRESSIVE
-            return "Magitech warriors who combine spell and steel"
+            if language == Language.ENGLISH:
+                return "Magitech warriors who harness both arcane energy and steel"
+            if language == Language.GERMAN:
+                return "Magitech-Krieger, die sowohl arkane Energie als auch Stahl beherrschen"
     else:  # PRACTICAL
         if stance == DiplomaticStance.PEACEFUL:
-            return "Builders who focus on technological advancement"
+            if language == Language.ENGLISH:
+                return "Master builders dedicated to the advancement of technology"
+            if language == Language.GERMAN:
+                return "Meisterbaumeister, die sich dem technologischen Fortschritt verschrieben haben"
         elif stance == DiplomaticStance.NEUTRAL:
-            return "Innovators who balance progress with strength"
+            if language == Language.ENGLISH:
+                return "Innovators who forge a path of progress and strength"
+            if language == Language.GERMAN:
+                return "Innovatoren, die einen Weg des Fortschritts und der Stärke beschreiten"
         else:  # AGGRESSIVE
-            return "Warriors who excel in military innovation"
+            if language == Language.ENGLISH:
+                return "Warriors at the forefront of military innovation and might"
+            if language == Language.GERMAN:
+                return "Krieger an der Spitze militärischer Innovation und Macht"
 
 
 def create_gui():
@@ -729,9 +770,9 @@ def create_gui():
                 *[gr.update(visible=False)] * 6
             )
 
-        tribe_overview = game_manager.current_game_state.tribe_string()
-        relationships = game_manager.current_game_state.relationship_string()
-        recent_history = game_manager.game_history.get_recent_history()
+        tribe_overview = game_manager.current_game_state.tribe_string(game_manager.language)
+        relationships = game_manager.current_game_state.relationship_string(game_manager.language)
+        recent_history = game_manager.game_history.get_recent_history(game_manager.language)
         current_situation = game_manager.current_game_state.situation
 
         if game_manager.current_game_state.current_action_choices is not None:
@@ -768,9 +809,9 @@ def create_gui():
             current_action_choices = game_manager.current_game_state.current_action_choices
 
             # Update all necessary GUI elements
-            tribe_overview = game_manager.current_game_state.tribe_string()
-            relationships = game_manager.current_game_state.relationship_string()
-            recent_history = game_manager.game_history.get_recent_history()
+            tribe_overview = game_manager.current_game_state.tribe_string(game_manager.language)
+            relationships = game_manager.current_game_state.relationship_string(game_manager.language)
+            recent_history = game_manager.game_history.get_recent_history(game_manager.language)
             current_situation = game_manager.current_game_state.situation
 
             action_updates = []
@@ -810,7 +851,7 @@ def create_gui():
         if game_manager.current_tribe_choices:
             result = ""
             for number, choice in enumerate(game_manager.current_tribe_choices.choices):
-                tribe_type = get_tribe_orientation(choice.development, choice.stance)
+                tribe_type = get_tribe_orientation(choice.development, choice.stance, game_manager.language)
                 result += f"{number + 1}. {choice.name}, "
                 result += f"{tribe_type}\n"
                 result += f"{choice.description}\n\n"
@@ -864,26 +905,17 @@ def create_gui():
 
     # Set up your Gradio interface here, using the above functions
     with gr.Blocks(title="Fantasy Tribe Game") as app:
-        gr.Markdown("# Fantasy Tribe Game")
+        title_markdown = gr.Markdown(f"# {translations['en']['title']}")
 
         # Game Tab
-        with gr.Tab("Game"):
+        game_tab = gr.Tab(translations['en']["game_tab"])
+        with game_tab:
             # Create tribe selection group
-
             with gr.Group() as tribe_selection_group:
                 race_theme = gr.Dropdown(
-                    choices=["", "Men", "High Elves ", "Wood Elves", "Dark Elves", "Dwarves", "Halflings", "Orcs",
-                             "Goblins", "Gnomes", "Trolls", "Ogres", "Kobolds", "Skaven", "Vampires", "Lycanthropes",
-                             "Giants", "Valkyries", "Norns", "Nephilim", "Fairies", "Sprites", "Pixies", "Changelings",
-                             "Angels", "Demons", "Celestials", "Fauns", "Ghuls", "Ifrits", "Unicorns", "Griffin",
-                             "Wyverns", "Centaurs", "Minotaurs", "Merfolk", "Naga", "Djinn", "Aasimar", "Tieflings",
-                             "Dragonborn", "Kitsune", "Tengu", "Sylphs", "Dryads", "Nymphs", "Harpies", "Satyrs",
-                             "Phoenix", "Basilisks", "Chimeras", "Gryphons", "Liches", "Elementals", "Golems",
-                             "Gargoyles", "Wendigo", "Yokai", "Rakshasa", "Selkies", "Banshees", "Revenants",
-                             "Succubi/Incubi", "Doppelgangers", "Wraiths", "Fomorians", "Firbolg", "Lizardfolk",
-                             "Kenku", "Aarakocra", "Tabaxi", "Yuan-ti", "Genasi", "Warforged", "Automata"],
+                    choices=translations['en']["race_themes"],
                     value="",
-                    label="Choose theme to influence race generation"
+                    label=translations['en']["race_theme_label"]
                 )
                 start_button = gr.Button("Generate Tribe Choices")
                 tribe_choices = gr.Textbox(label="Available Tribes", lines=10)
@@ -915,6 +947,12 @@ def create_gui():
         # Add Settings Tab
         with gr.Tab("Settings"):
             with gr.Group():
+                gr.Markdown("## Language Configuration")
+                language_dropdown = gr.Dropdown(
+                    choices=[lang.value for lang in Language],
+                    value=config.language.value,
+                    label="Language"
+                )
                 gr.Markdown("## Story LLM Configuration")
                 story_provider_dropdown = gr.Dropdown(
                     choices=[provider.value for provider in LLMProvider],
@@ -1017,11 +1055,19 @@ def create_gui():
                          summary_local_url_input]
             )
 
+            def update_ui_language(language):
+                lang = translations.get(language, translations["en"])  # Default to English if language not found
+
+                return {
+                    'title_markdown': gr.update(value=f"# {lang['title']}"),
+                    'game_tab': gr.update(label=lang['game_tab']),
+                    'race_theme': gr.update(choices=lang['race_themes'], label=lang['race_theme_label']),
+                    # Add other UI elements that need updating here
+                }
             # Function to save settings
-            def save_settings(story_provider, story_model_anthropic, story_model_openai, story_model_local,
-                              story_local_url,
-                              summary_provider, summary_model_anthropic, summary_model_openai, summary_model_local,
-                              summary_local_url, summary_mode):
+            def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_local,
+                              story_local_url, summary_provider, summary_model_anthropic, summary_model_openai,
+                              summary_model_local, summary_local_url, summary_mode):
                 story_model = story_model_anthropic if story_provider == LLMProvider.ANTHROPIC.value else \
                     story_model_openai if story_provider == LLMProvider.OPENAI.value else \
                         story_model_local
@@ -1040,19 +1086,28 @@ def create_gui():
                         model_name=summary_model,
                         mode=SummaryMode(summary_mode),
                         local_url=summary_local_url if summary_provider == LLMProvider.LOCAL.value else None
-                    )
+                    ),
+                    language=Language(language)
                 )
                 llm_context.update(new_config)
-                return "Settings saved successfully!"
+                game_manager.language = Language(language)
+                # Add the settings message to the UI updates
+                ui_updates = update_ui_language(language)
+
+                return (
+                    ui_updates.get('title_markdown', gr.update()),
+                    ui_updates.get('game_tab', gr.update()),
+                    ui_updates.get('race_theme', gr.update()),
+                    gr.update(value="Settings saved successfully!")
+                )
 
             settings_save_btn.click(
                 save_settings,
-                inputs=[story_provider_dropdown, story_model_dropdown, story_model_openai_dropdown,
-                        story_model_local_input, story_local_url_input,
+                inputs=[language_dropdown, story_provider_dropdown, story_model_dropdown,
+                        story_model_openai_dropdown, story_model_local_input, story_local_url_input,
                         summary_provider_dropdown, summary_model_dropdown, summary_model_openai_dropdown,
-                        summary_model_local_input, summary_local_url_input,
-                        summary_mode_dropdown],
-                outputs=[settings_message]
+                        summary_model_local_input, summary_local_url_input, summary_mode_dropdown],
+                outputs=[title_markdown, game_tab, race_theme, settings_message]
             )
 
 
@@ -1135,5 +1190,7 @@ def create_gui():
 
 
 if __name__ == "__main__":
-    interface = create_gui()
-    interface.launch()
+    app = create_gui()
+    app.launch(share=False,
+               debug=True,
+               server_name="0.0.0.0")

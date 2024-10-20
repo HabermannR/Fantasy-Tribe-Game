@@ -130,6 +130,19 @@ class DiplomaticStatus(Enum):
     ENEMY = "enemy"
 
 
+DIPLOMATIC_STATUS_TRANSLATIONS = {
+    Language.ENGLISH: {
+        DiplomaticStatus.ALLY: "Ally",
+        DiplomaticStatus.NEUTRAL: "Neutral",
+        DiplomaticStatus.ENEMY: "Enemy",
+    },
+    Language.GERMAN: {
+        DiplomaticStatus.ALLY: "Verbündeter",
+        DiplomaticStatus.NEUTRAL: "Neutral",
+        DiplomaticStatus.ENEMY: "Feind",
+    },
+}
+
 class TribeType(BaseModel):
     name: str
     description: str
@@ -209,7 +222,8 @@ class TextFormatter:
 
         for status in status_order:
             if tribes_by_status[status]:
-                text += f"\n\n{status.value.title()}:"
+                status_translation = DIPLOMATIC_STATUS_TRANSLATIONS[language][status]
+                text += f"\n\n{status_translation}:"
                 for tribe in tribes_by_status[status]:
                     text += TextFormatter._format_foreign_tribe(tribe, relation, language)
         return text
@@ -464,7 +478,6 @@ class GameStateManager:
             get_tribe_orientation(dev_type, stance, self.language)
             for dev_type, stance in selected_combinations
         ]
-        tribe1 = ""
         if external_choice != "":
             tribe1 = f"- Must be {external_choice}. Mention the race in the description."
         else:
@@ -618,9 +631,9 @@ allowing the player to infer consequences and strategic elements without explici
             tribe.diplomatic_status == DiplomaticStatus.NEUTRAL)
 
         if self.current_game_state.turn > 5 and enemy_count < 1:
-            tribes_prompt += "* Add one or two enemy factions\n"
+            tribes_prompt += "* Add one enemy factions if it fits the current situation, and use them for the current situation and the event_result\n"
         if self.current_game_state.turn > 3 and neutral_count < 2:
-            tribes_prompt += "* Add one or two neutral factions\n"
+            tribes_prompt += "* Add one or two neutral factions if it fits the current situation, and use them for the current situation and the event_result\n"
 
         context = f"""State: {self.current_game_state.to_context_string(self.language)}
 Development: {self.current_game_state.tribe.development.value}
@@ -645,7 +658,7 @@ Required Updates:
 
 3. Foreign Relations:
    - For each tribe: status, name, description, development, stance, leaders (max 2)
-   - For each leader pf a foreign tribe: Names, titles, relationships to the leaders of the players tribe
+   - For each leader of a foreign tribe: Names, titles, relationships to the leaders of the players tribe
    - Status changes require multiple turns
    - Consider development/stance compatibility
    {tribes_prompt}

@@ -14,12 +14,10 @@ T = TypeVar('T', bound=BaseModel)
 class SummaryModel(BaseModel):
     summary: str
 
-
 class LLMProvider(Enum):
     LOCAL = "local"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
-
 
 class ModelType(Enum):
     STORY = "story"
@@ -29,7 +27,6 @@ class ModelType(Enum):
 class SummaryMode(Enum):
     JSON = "json"
     RAW = "raw"
-
 
 class ModelConfig:
     def __init__(self,

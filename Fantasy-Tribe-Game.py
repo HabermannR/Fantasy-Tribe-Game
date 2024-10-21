@@ -254,8 +254,8 @@ class TextFormatter:
     def format_tribe_description_llm(tribe: TribeType, leaders: List[Character], relation: bool) -> str:
         tribe_type = get_tribe_orientation(tribe.development, tribe.stance, Language.ENGLISH)
         text = f"""Tribe name: {tribe.name}
-Tribe development type: {tribe.development}
-Tribe stance: {tribe.stance}
+Tribe development type: {tribe.development.value}
+Tribe stance: {tribe.stance.value}
 Resulting tribe type: {tribe_type}
 
 Tribe description: {tribe.description}
@@ -273,7 +273,7 @@ Tribe description: {tribe.description}
             for rel in leader.relationships:
                 sentiment = TextFormatter.get_sentiment(rel.opinion, language)
                 if language == Language.ENGLISH:
-                    text += f"\n      - {rel.type} relationship with  {rel.target} , {sentiment}: {rel.opinion}"
+                    text += f"\n      - {rel.type} relationship with  {rel.target}, {sentiment}: {rel.opinion}"
                 elif language == Language.GERMAN:
                     text += f"\n      - Beziehung zu {rel.target}: {rel.type}, {sentiment}: {rel.opinion}"
         return text
@@ -328,7 +328,7 @@ Tribe description: {tribe.description}
                 for rel in leader.relationships:
                     sentiment = TextFormatter.get_sentiment(rel.opinion, language)
                     if language == Language.ENGLISH:
-                        text += f"  - {rel.type} relationship with  {rel.target} , {sentiment}\n"
+                        text += f"  - {rel.type} relationship with  {rel.target}, {sentiment}\n"
                     elif language == Language.GERMAN:
                         text += f"  - Beziehung zu {rel.target}: {rel.type}, {sentiment}\n"
 
@@ -341,7 +341,7 @@ Tribe description: {tribe.description}
                         for rel in leader.relationships:
                             sentiment = TextFormatter.get_sentiment(rel.opinion, language)
                             if language == Language.ENGLISH:
-                                text += f"  - {rel.type} relationship with  {rel.target} , {sentiment}\n"
+                                text += f"  - {rel.type} relationship with  {rel.target}, {sentiment}\n"
                             elif language == Language.GERMAN:
                                 text += f"  - Beziehung zu {rel.target}: {rel.type}, {sentiment}\n"
 
@@ -352,6 +352,7 @@ Tribe description: {tribe.description}
 class GameHistory:
     def __init__(self):
         self.history: List['GameState'] = []
+        self.short_history = ""
 
     def add_state(self, state: 'GameState'):
         self.history.append(copy.deepcopy(state))
@@ -639,7 +640,9 @@ class GameStateManager:
         return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
 
     def update_and_generate_choices(self, choice_type: EventType) -> None:
-        recent_history = self.game_history.get_recent_short_history(num_events=5)
+        recent_history = self.game_history.get_recent_short_history(num_events=1)
+        if recent_history != "":
+            self.game_history.short_history = self.llm_context.get_summary(self.game_history.short_history + recent_history)
         prob_adjustment = self.get_probability_adjustment()
 
         # Build tribes prompt for potential new factions
@@ -659,9 +662,13 @@ class GameStateManager:
         action_context = ""
         if self.current_game_state.chosen_action:
             action_context = f"""Action: {self.current_game_state.chosen_action.caption}
+        
     {self.current_game_state.chosen_action.description}
 
-    Outcome: {self.current_game_state.event_result}"""
+    Outcome: {self.current_game_state.last_outcome.name}"""
+        else:
+            action_context = f"""This is the beginning of the {self.current_game_state.tribe.name}. 
+Treat the last action and the outcome as neutral, and tell something about their background."""
 
         # Define choice type specific instructions
         choice_types = {
@@ -681,7 +688,7 @@ class GameStateManager:
         context = f"""Gamestate: 
 {self.current_game_state.to_context_string(self.language)}
 
-    History: {recent_history}
+    History: {self.game_history.short_history}
     Previous: {self.current_game_state.previous_situation}
 
     {action_context}"""
@@ -725,7 +732,7 @@ class GameStateManager:
     Maintain consistency with game state, action outcomes, and existing relationships.
     Output the response as JSON with both state updates and next choices."""
 
-        #summary = self.llm_context.get_summary(context)
+
 
         messages = [
             {
@@ -762,139 +769,10 @@ class GameStateManager:
                                     subsequent_indent="   "))
                 print(f"   Probability of Success: {choice.probability:.2f}")
 
-    def generate_choices(self, choice_type: EventType) -> None:
-        recent_history = self.game_history.get_recent_short_history(num_events=5)
-        prob_adjustment = self.get_probability_adjustment()
-
-        action_context = ""
-        if self.current_game_state.chosen_action:
-            action_context = f"""Action: {self.current_game_state.chosen_action.caption}
-    {self.current_game_state.chosen_action.description}
-
-    Outcome: {self.current_game_state.event_result}"""
-
-        choice_types = {
-            EventType.SINGLE_EVENT: {"instruction": "create a new event", "extra": ""},
-            EventType.REACTION: {"instruction": "create a reaction to this last outcome",
-                                 "extra": "Include a foreign character in the reaction."},
-            EventType.FOLLOWUP: {"instruction": "create a follow up to this last outcome",
-                                 "extra": "Keep choices thematically close to the last action."}
-        }
-
-        if choice_type not in choice_types:
-            raise ValueError(f"Invalid choice type: {choice_type}")
-
-        choice_type_fields = choice_types[choice_type]
-
-        context = f"""State: {self.current_game_state.to_context_string(self.language)}
-History: {recent_history}
-Previous: {self.current_game_state.previous_situation}
-
-{action_context}"""
-        instruction = f"""
-{choice_type_fields['instruction']} and add to:
-{self.current_game_state.situation}
-Save a summary in "situation".
-
-Present 3 possible next actions:
-{choice_type_fields['extra']}
-Each has a caption, description, and probability of success 
-Weave implications and broader context into the description organically, 
-allowing the player to infer consequences and strategic elements without explicit statements.
-{prob_adjustment}
-- One choice should have high probability
-- Include at least one aggressive option (probability based on tribe info)"""
-
-        summary = self.llm_context.get_summary(context)
-
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a game master for a tribal fantasy strategy game. Output answers as JSON"
-            },
-            {
-                "role": "user",
-                "content": summary + instruction}]
-
-        #next_choices = self.llm_context.make_story_call(messages, NextReactionChoices, max_tokens=2000)
-        #if next_choices:
-        #    self.current_game_state.situation = next_choices.situation
-        #    self.current_game_state.current_action_choices = NextChoices(choices=next_choices.choices)
-
-#            print("\n=== Available Actions ===")
-#            for i, choice in enumerate(next_choices.choices, 1):
-#                print(f"\n{i}. {choice.caption}")
-#                print(textwrap.fill(f"Description: {choice.description}",
-#                                    width=80,
-#                                    initial_indent="   ",
-#                                    subsequent_indent="   "))
-#                print(f"   Probability of Success: {choice.probability:.2f}")
-
-    def update_game_state(self) -> None:
-        recent_history = self.game_history.get_recent_short_history(num_events=5)
-        tribes_prompt = ""
-        enemy_count = sum(
-            1 for tribe in self.current_game_state.foreign_tribes if tribe.diplomatic_status == DiplomaticStatus.ENEMY)
-        neutral_count = sum(
-            1 for tribe in self.current_game_state.foreign_tribes if
-            tribe.diplomatic_status == DiplomaticStatus.NEUTRAL)
-
-        if self.current_game_state.turn > 5 and enemy_count < 1:
-            tribes_prompt += "* Add one enemy factions if it fits the current situation, and use them for the current situation and the event_result\n"
-        if self.current_game_state.turn > 3 and neutral_count < 2:
-            tribes_prompt += "* Add one or two neutral factions if it fits the current situation, and use them for the current situation and the event_result\n"
-
-        context = f"""State: {self.current_game_state.to_context_string(self.language)}
-Development: {self.current_game_state.tribe.development.value}
-Stance: {self.current_game_state.tribe.stance.value}
-
-History: {recent_history}
-{self.current_game_state.previous_situation}
-"""
-        instructions = f"""
-Last situation: {self.current_game_state.previous_situation}
-Action chosen by the player: {self.current_game_state.chosen_action.caption} - {self.current_game_state.chosen_action.description}
-Outcome: {self.current_game_state.last_outcome.name}
-Required Updates:
-
-1. Leaders (max 5):
-   - Update names, titles and relationships, both to tribe leaders as well as to leaders of foreign tribes
-   - Add special roles if warranted
-   - Only major changes based on events
-
-2. Situation:
-   - Current state summary
-
-3. Foreign Relations:
-   - For each tribe: status, name, description, development, stance, leaders (max 2)
-   - For each leader of a foreign tribe: Names, titles, relationships to the leaders of the players tribe
-   - Status changes require multiple turns
-   - Consider development/stance compatibility
-   {tribes_prompt}
-4. Event Results:
-   - 2 paragraphs narrative (event_result)
-   - Events may continue
-
-Maintain consistency with game state, action outcomes, and existing relationships."""
-        summary = self.llm_context.get_summary(context)
-        messages = [
-            {
-                "role": "system",
-                "content": "You are the game master for a text-based strategic game, where the player rules over a tribe in a fantasy setting. Your task is to update the game state based on the player's actions and their outcomes."
-            },
-            {
-                "role": "user",
-                "content": summary + instructions
-            }
-        ]
-
-        new_state = self.llm_context.make_story_call(messages, GameStateBase, max_tokens=5000)
-        self.current_game_state.update(new_state)
-
 
     @staticmethod
     def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
-        roll = round(random.random(),2)
+        roll = random.randint(0, 100) / 100.0
         # roll = 0.0
         # roll = 1.0
         if roll >= 0.95:

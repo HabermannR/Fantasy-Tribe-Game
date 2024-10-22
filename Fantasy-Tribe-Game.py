@@ -776,6 +776,7 @@ Treat the last action and the outcome as neutral, and tell something about their
         roll = random.randint(0, 100) / 100.0
         # roll = 0.0
         # roll = 1.0
+        roll = 0.8
         if roll >= 0.95:
             return OutcomeType.CATASTROPHE, roll
         if roll <= probability:
@@ -999,8 +1000,8 @@ def create_gui():
                     label="Story LLM Provider"
                 )
                 story_model_dropdown = gr.Dropdown(
-                    choices=["claude-3-5-sonnet-20240620"],
-                    value="claude-3-5-sonnet-20240620",
+                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620"],
+                    value="claude-3-5-sonnet-20241022",
                     label="Story Model (Anthropic)",
                     visible=config.story_config.provider == LLMProvider.ANTHROPIC
                 )

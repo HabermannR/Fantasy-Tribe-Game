@@ -96,7 +96,7 @@ class Config:
         return cls(
             story_config=ModelConfig(
                 provider=LLMProvider.ANTHROPIC,
-                model_name="claude-3-5-sonnet-20240620"
+                model_name="claude-3-5-sonnet-20241022"
             ),
             summary_config=SummaryModelConfig(
                 provider=LLMProvider.OPENAI,

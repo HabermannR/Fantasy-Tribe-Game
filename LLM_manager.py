@@ -27,7 +27,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-
 import os
 import time
 from typing import Dict, Any, TypeVar, Type, List, Optional, Union
@@ -44,10 +43,12 @@ T = TypeVar('T', bound=BaseModel)
 class SummaryModel(BaseModel):
     summary: str
 
+
 class LLMProvider(Enum):
     LOCAL = "local"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+
 
 class ModelType(Enum):
     STORY = "story"
@@ -58,6 +59,7 @@ class SummaryMode(Enum):
     JSON = "json"
     RAW = "raw"
 
+
 class ModelConfig:
     def __init__(self,
                  provider: LLMProvider,
@@ -67,6 +69,7 @@ class ModelConfig:
         self.model_name = model_name
         self.local_url = local_url
 
+
 class SummaryModelConfig(ModelConfig):
     def __init__(self,
                  provider: LLMProvider,
@@ -75,6 +78,7 @@ class SummaryModelConfig(ModelConfig):
                  local_url: Optional[str] = None):
         super().__init__(provider, model_name, local_url)
         self.mode = mode
+
 
 class Config:
     def __init__(self,
@@ -174,7 +178,8 @@ class LLMStrategy:
         self.model_config = model_config
         self.api_key = api_key
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None, max_tokens: Optional[int] = None) -> Union[T, str]:
+    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
+                      max_tokens: Optional[int] = None) -> Union[T, str]:
         raise NotImplementedError
 
 
@@ -330,8 +335,8 @@ class LLMContext:
         Returns either a string (RAW mode) or SummaryModel (JSON mode)
         """
         systemprompt = {
-            Language.ENGLISH: "Take this text from a fantasy setting and rephrase its content more fludidly, while shortening it a bit",
-            Language.GERMAN: "Take this text from a fantasy setting and rephrase its content more fludidly in German, while shortening it a bit"
+            Language.ENGLISH: "Take this text from a fantasy setting and rephrase its content more fluidly, while shortening it a bit",
+            Language.GERMAN: "Take this text from a fantasy setting and rephrase its content more fluidly in German, while shortening it a bit"
         }.get(self.config.language)
         messages = [
             {

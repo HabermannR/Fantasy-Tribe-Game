@@ -44,6 +44,7 @@ from LLM_manager import LLMContext, Config, ModelConfig, SummaryModelConfig, LLM
 
 random.seed(datetime.now().timestamp())
 
+
 class EnumEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Enum):
@@ -138,6 +139,7 @@ DIPLOMATIC_STATUS_TRANSLATIONS = {
         DiplomaticStatus.ENEMY: "Feind",
     },
 }
+
 
 def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance, language: Language) -> str:
     """
@@ -260,7 +262,7 @@ Resulting tribe type: {tribe_type}
 
 Tribe description: {tribe.description}
 
-{"Leaders:" }"""
+{"Leaders:"}"""
         for leader in leaders:
             text += TextFormatter._format_leader(leader, relation, Language.ENGLISH)
         return text
@@ -451,7 +453,7 @@ class GameState(GameStateBase):
 
     def update_tier(self) -> None:
         """Updates the tier based on the current power level."""
-        self.tier = min(self.power // 10, 4) + 1
+        self.tier = max(min((self.power-5) // 10, 3) + 1, 1)
 
     def check_streak_catastrophe(self) -> bool:
         """Checks if streak has reached catastrophe level."""
@@ -549,7 +551,7 @@ class GameStateManager:
             self.game_history.add_state(state)
         self.current_game_state.turn += 1
 
-    def generate_tribe_choices(self, external_choice:str = "") -> InitialChoices:
+    def generate_tribe_choices(self, external_choice: str = "") -> InitialChoices:
         # Generate 3 unique combinations of development type and diplomatic stance
 
         possible_combinations = [
@@ -642,7 +644,8 @@ class GameStateManager:
     def update_and_generate_choices(self, choice_type: EventType) -> None:
         recent_history = self.game_history.get_recent_short_history(num_events=1)
         if recent_history != "":
-            self.game_history.short_history = self.llm_context.get_summary(self.game_history.short_history + recent_history)
+            self.game_history.short_history = self.llm_context.get_summary(
+                self.game_history.short_history + recent_history)
         prob_adjustment = self.get_probability_adjustment()
 
         # Build tribes prompt for potential new factions
@@ -732,8 +735,6 @@ Treat the last action and the outcome as neutral, and tell something about their
     Maintain consistency with game state, action outcomes, and existing relationships.
     Output the response as JSON with both state updates and next choices."""
 
-
-
         messages = [
             {
                 "role": "system",
@@ -741,7 +742,7 @@ Treat the last action and the outcome as neutral, and tell something about their
             },
             {
                 "role": "user",
-                #"content": summary + instructions
+                # "content": summary + instructions
                 "content": context + instructions
             }
         ]
@@ -753,7 +754,8 @@ Treat the last action and the outcome as neutral, and tell something about their
             # Update game state
             gamestate = GameStateBase(tribe=combined_response.tribe, leaders=combined_response.leaders,
                                       foreign_tribes=combined_response.foreign_tribes,
-                                      situation=combined_response.situation, event_result=combined_response.event_result)
+                                      situation=combined_response.situation,
+                                      event_result=combined_response.event_result)
             self.current_game_state.update(gamestate)
 
             # Update choices
@@ -768,7 +770,6 @@ Treat the last action and the outcome as neutral, and tell something about their
                                     initial_indent="   ",
                                     subsequent_indent="   "))
                 print(f"   Probability of Success: {choice.probability:.2f}")
-
 
     @staticmethod
     def determine_outcome(probability: float) -> Tuple[OutcomeType, float]:
@@ -789,9 +790,6 @@ Treat the last action and the outcome as neutral, and tell something about their
         return random.choices(
             [EventType.SINGLE_EVENT, EventType.REACTION, EventType.FOLLOWUP],
             weights=[0.2, 0.4, 0.4], k=1)[0]
-
-
-
 
 
 def create_gui():
@@ -914,7 +912,6 @@ def create_gui():
                 leader = game_manager.get_leader(chosen_tribe)
                 game_manager.initialize(chosen_tribe, leader)
 
-
                 # Unpack the return values from update_game_display
                 tribe_overview, recent_history, relationships, current_situation, *action_updates = update_game_display()
 
@@ -1034,8 +1031,8 @@ def create_gui():
                     label="Summary LLM Provider"
                 )
                 summary_model_dropdown = gr.Dropdown(
-                    choices=["claude-3-5-sonnet-20240620"],
-                    value="claude-3-5-sonnet-20240620",
+                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620"],
+                    value="claude-3-5-sonnet-20241022",
                     label="Summary Model (Anthropic)",
                     visible=config.summary_config.provider == LLMProvider.ANTHROPIC
                 )
@@ -1106,6 +1103,7 @@ def create_gui():
                     'race_theme': gr.update(choices=lang['race_themes'], label=lang['race_theme_label']),
                     # Add other UI elements that need updating here
                 }
+
             # Function to save settings
             def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_local,
                               story_local_url, summary_provider, summary_model_anthropic, summary_model_openai,
@@ -1151,7 +1149,6 @@ def create_gui():
                         summary_model_local_input, summary_local_url_input, summary_mode_dropdown],
                 outputs=[title_markdown, game_tab, race_theme, settings_message]
             )
-
 
         start_button.click(
             generate_tribes,

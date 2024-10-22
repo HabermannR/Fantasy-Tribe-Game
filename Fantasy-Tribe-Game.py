@@ -776,7 +776,6 @@ Treat the last action and the outcome as neutral, and tell something about their
         roll = random.randint(0, 100) / 100.0
         # roll = 0.0
         # roll = 1.0
-        roll = 0.8
         if roll >= 0.95:
             return OutcomeType.CATASTROPHE, roll
         if roll <= probability:

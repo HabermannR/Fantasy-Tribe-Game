@@ -29,25 +29,38 @@ SOFTWARE.
 
 import os
 import time
-from typing import Dict, Any, TypeVar, Type, List, Optional, Union
+from typing import Dict, Any, TypeVar, Type, List, Optional, Union, Generic
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 from enum import Enum
 from Language import Language
 
 from openai import OpenAI
 import anthropic
+import google.generativeai as genai
 
-T = TypeVar('T', bound=BaseModel)
+
+T = TypeVar('T')
+D = TypeVar('D', bound=TypedDict)
+
+class ResponseTypes(Generic[T, D]):
+    def __init__(self, pydantic_model: Type[T], typed_dict: Type[D]):
+        self.pydantic_model = pydantic_model
+        self.typed_dict = typed_dict
 
 
 class SummaryModel(BaseModel):
     summary: str
 
 
+class SummaryModelDict(TypedDict):
+    summary: str
+
 class LLMProvider(Enum):
     LOCAL = "local"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
 
 
 class ModelType(Enum):
@@ -84,15 +97,16 @@ class Config:
     def __init__(self,
                  story_config: ModelConfig,
                  summary_config: SummaryModelConfig,
-                 language: Language = Language.ENGLISH):
+                 language: Language = "english"):
         self.story_config = story_config
         self.summary_config = summary_config
         self.language = language
         self.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+        self.GEMINI_API_KEY = os.getenv("GEMINI_KEY", "")
 
     @classmethod
-    def default_config(cls, language: Language = Language.ENGLISH):
+    def default_config(cls, language: Language = "english"):
         return cls(
             story_config=ModelConfig(
                 provider=LLMProvider.ANTHROPIC,
@@ -109,7 +123,7 @@ class Config:
     @classmethod
     def local_config(cls,
                      summary_mode: SummaryMode = SummaryMode.JSON,
-                     language: Language = Language.ENGLISH):
+                     language: Language = "english"):
         return cls(
             story_config=ModelConfig(
                 provider=LLMProvider.LOCAL,
@@ -126,9 +140,39 @@ class Config:
         )
 
 
+# Create the final JSON schema expected by OpenAI API
+def resolve_refs(schema: dict, definitions: dict) -> dict:
+    """Recursively resolve all $ref references in a JSON schema."""
+    if isinstance(schema, dict):
+        if '$ref' in schema:
+            ref_path = schema['$ref']
+            if ref_path.startswith('#/$defs/'):
+                ref_name = ref_path.split('/')[-1]
+                return resolve_refs(definitions[ref_name], definitions)
+
+        return {k: resolve_refs(v, definitions) for k, v in schema.items() if k != '$defs'}
+    elif isinstance(schema, list):
+        return [resolve_refs(item, definitions) for item in schema]
+    else:
+        return schema
+
 def create_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
     schema = model.model_json_schema()
-    return {"type": "json_schema", "json_schema": {"schema": schema}}
+
+    # Store the definitions
+    definitions = schema.get('$defs', {})
+
+    # Resolve all references
+    resolved_schema = resolve_refs(schema, definitions)
+
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "test_schema",
+            "strict": True,
+            "schema": resolved_schema,
+        },
+    }
 
 
 class SystemPrompts:
@@ -144,9 +188,9 @@ For example:
 
     @staticmethod
     def get_prompt(language: Language) -> str:
-        if language == Language.ENGLISH:
+        if language == "english":
             return SystemPrompts.ENGLISH_PROMPT
-        elif language == Language.GERMAN:
+        elif language == "german":
             return SystemPrompts.GERMAN_PROMPT
         else:
             raise ValueError(f"Unsupported language: {language}")
@@ -178,8 +222,12 @@ class LLMStrategy:
         self.model_config = model_config
         self.api_key = api_key
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                      max_tokens: Optional[int] = None) -> Union[T, str]:
+    def make_api_call(
+        self,
+        messages: List[Dict[str, str]],
+        response_types: Optional[ResponseTypes] = None,
+        max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
         raise NotImplementedError
 
 
@@ -188,8 +236,12 @@ class AnthropicStrategy(LLMStrategy):
         super().__init__(model_config, api_key)
         self.client = anthropic.Anthropic(api_key=api_key)
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                      max_tokens: Optional[int] = 1500) -> Union[T, str]:
+    def make_api_call(
+            self,
+            messages: List[Dict[str, str]],
+            response_types: Optional[ResponseTypes] = None,
+            max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
         try:
             start_time = time.time()
             if isinstance(self.model_config, SummaryModelConfig) and self.model_config.mode == SummaryMode.RAW:
@@ -201,7 +253,7 @@ class AnthropicStrategy(LLMStrategy):
                 )
                 result = response.content[0].text
             else:
-                tool_schema = create_json_schema(response_model)
+                tool_schema = create_json_schema(response_types.pydantic_model)
                 response = self.client.messages.create(
                     model=self.model_config.model_name,
                     max_tokens=max_tokens,
@@ -214,7 +266,7 @@ class AnthropicStrategy(LLMStrategy):
                     }],
                     tool_choice={"type": "tool", "name": "Tribe_Game"}
                 )
-                result = response_model.model_validate(response.content[0].input)
+                result = response_types.pydantic_model.model_validate(response.content[0].input)
 
             end_time = time.time()
             print(f"Time in Anthropic ({self.model_config.model_name}): ", end_time - start_time)
@@ -230,8 +282,12 @@ class OpenAIStrategy(LLMStrategy):
         super().__init__(model_config, api_key)
         self.client = OpenAI(api_key=api_key)
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                      max_tokens: Optional[int] = 1500) -> Union[T, str]:
+    def make_api_call(
+            self,
+            messages: List[Dict[str, str]],
+            response_types: Optional[ResponseTypes] = None,
+            max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
         try:
             start_time = time.time()
             if isinstance(self.model_config, SummaryModelConfig) and self.model_config.mode == SummaryMode.RAW:
@@ -245,7 +301,7 @@ class OpenAIStrategy(LLMStrategy):
                 completion = self.client.beta.chat.completions.parse(
                     model=self.model_config.model_name,
                     messages=messages,
-                    response_format=response_model,
+                    response_format=response_types.pydantic_model,
                     max_tokens=max_tokens
                 )
                 result = completion.choices[0].message.parsed
@@ -259,13 +315,52 @@ class OpenAIStrategy(LLMStrategy):
             raise RuntimeError(f"OpenAI API call failed: {str(e)}")
 
 
+class GeminiStrategy(LLMStrategy):
+    def __init__(self, model_config: ModelConfig, api_key: str):
+        super().__init__(model_config, api_key)
+        genai.configure(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
+
+    def make_api_call(
+            self,
+            messages: List[Dict[str, str]],
+            response_types: Optional[ResponseTypes] = None,
+            max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
+        try:
+            start_time = time.time()
+            model = genai.GenerativeModel(self.model_config.model_name, )
+            if isinstance(self.model_config, SummaryModelConfig) and self.model_config.mode == SummaryMode.RAW:
+                chat = model.start_chat(history = [
+                    {"role": "user", "parts": "System prompt: " + messages[0]['content']},])
+                response = chat.send_message(messages[1]['content'])
+                result = response.text
+            else:
+                completion = model.generate_content(
+                    messages[0]['content'] + ": " + messages[1]['content'],
+                    generation_config=genai.GenerationConfig(
+                        response_mime_type="application/json", response_schema=response_types.typed_dict
+                    ),
+                )
+                result = response_types.pydantic_model.model_validate_json(completion.text)
+
+            end_time = time.time()
+            print(f"Time in local LLM ({self.model_config.model_name}): ", end_time - start_time)
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Gemini model API call failed: {str(e)}")
+
 class LocalModelStrategy(LLMStrategy):
     def __init__(self, model_config: ModelConfig, api_key: str = "not-needed"):
         super().__init__(model_config, api_key)
         self.client = OpenAI(base_url=model_config.local_url, api_key=api_key)
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                      max_tokens: Optional[int] = 1500) -> Union[T, str]:
+    def make_api_call(
+            self,
+            messages: List[Dict[str, str]],
+            response_types: Optional[ResponseTypes] = None,
+            max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
         try:
             start_time = time.time()
             if isinstance(self.model_config, SummaryModelConfig) and self.model_config.mode == SummaryMode.RAW:
@@ -279,11 +374,10 @@ class LocalModelStrategy(LLMStrategy):
                 completion = self.client.chat.completions.create(
                     model=self.model_config.model_name,
                     messages=messages,
-                    response_format=create_json_schema(response_model),
+                    response_format=create_json_schema(response_types.pydantic_model),
                     max_tokens=max_tokens
                 )
-                result = response_model.model_validate_json(completion.choices[0].message.content)
-
+                result = response_types.pydantic_model.model_validate_json(completion.choices[0].message.content)
             end_time = time.time()
             print(f"Time in local LLM ({self.model_config.model_name}): ", end_time - start_time)
             return result
@@ -307,26 +401,39 @@ class LLMContext:
             return AnthropicStrategy(model_config, self.config.ANTHROPIC_API_KEY)
         elif model_config.provider == LLMProvider.OPENAI:
             return OpenAIStrategy(model_config, self.config.OPENAI_API_KEY)
+        elif model_config.provider == LLMProvider.GEMINI:
+            return GeminiStrategy(model_config, self.config.GEMINI_API_KEY)
         else:  # LOCAL
             return LocalModelStrategy(model_config)
 
-    def make_api_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                      max_tokens: Optional[int] = None) -> Union[T, str]:
-        if response_model == SummaryModel:
+    def make_api_call(
+        self,
+        messages: List[Dict[str, str]],
+        response_types: Optional[ResponseTypes] = None,
+        max_tokens: Optional[int] = None
+    ) -> Union[T, D, str]:
+        if response_types and isinstance(response_types.pydantic_model, type(SummaryModel)):
             strategy = self._summary_strategy
         else:
             strategy = self._story_strategy
 
-        return strategy.make_api_call(messages, response_model, max_tokens)
+        return strategy.make_api_call(messages, response_types, max_tokens)
 
-    def make_story_call(self, messages: List[Dict[str, str]], response_model: Type[T],
-                        max_tokens: Optional[int] = 1500) -> T:
+    def make_story_call(
+        self,
+        messages: List[Dict[str, str]],
+        response_types: ResponseTypes[T, D],
+        max_tokens: Optional[int] = 1500
+    ) -> Union[T, D]:
         messages = SystemPrompts.inject_system_prompt(messages, self.config.language)
-        return self._story_strategy.make_api_call(messages, response_model, max_tokens)
+        return self._story_strategy.make_api_call(messages, response_types, max_tokens)
 
-    def make_summary_call(self, messages: List[Dict[str, str]], response_model: Optional[Type[T]] = None,
-                          max_tokens: Optional[int] = 1500) -> Union[T, str]:
-        return self._summary_strategy.make_api_call(messages, response_model, max_tokens)
+    def make_summary_call(self,
+        messages: List[Dict[str, str]],
+        response_types: ResponseTypes[T, D],
+        max_tokens: Optional[int] = 1500
+    ) -> Union[T, D]:
+        return self._summary_strategy.make_api_call(messages, response_types, max_tokens)
 
     def get_summary(self, context: str,
                     max_tokens: Optional[int] = 1500) -> str:
@@ -335,8 +442,8 @@ class LLMContext:
         Returns either a string (RAW mode) or SummaryModel (JSON mode)
         """
         systemprompt = {
-            Language.ENGLISH: "Take this text from a fantasy setting and rephrase its content more fluidly, while shortening it a bit",
-            Language.GERMAN: "Take this text from a fantasy setting and rephrase its content more fluidly in German, while shortening it a bit"
+            "english": "Take this text from a fantasy setting and rephrase its content more fluidly, while shortening it a bit",
+            "german": "Take this text from a fantasy setting and rephrase its content more fluidly in German, while shortening it a bit"
         }.get(self.config.language)
         messages = [
             {
@@ -351,6 +458,10 @@ class LLMContext:
 
         if isinstance(self.config.summary_config, SummaryModelConfig) and \
                 self.config.summary_config.mode == SummaryMode.JSON:
-            return self.make_summary_call(messages, SummaryModel, max_tokens).summary
+            response_types = ResponseTypes(
+                pydantic_model=SummaryModel,
+                typed_dict=SummaryModelDict
+            )
+            return self.make_summary_call(messages, response_types, max_tokens).summary
         else:
             return self.make_summary_call(messages, max_tokens)

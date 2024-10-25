@@ -1,11 +1,9 @@
-from enum import Enum
+from typing import Literal
 
-class Language(Enum):
-    ENGLISH = "en"
-    GERMAN = "de"
+Language = Literal["english", "german"]
 
 translations = {
-    "en": {
+    "english": {
         "title": "Fantasy Tribe Game",
         "game_tab": "Game",
         "race_theme_label": "Choose theme to influence race generation",
@@ -37,7 +35,7 @@ translations = {
         "settings_save_btn": "Save Settings",
         "settings_status_label": "Settings Status",
     },
-     "de": {
+     "german": {
         "title": "Fantasy-Stammesspiel",
         "game_tab": "Spiel",
         "race_theme_label": "Wähle ein Thema, um die Rassengenerierung zu beeinflussen",

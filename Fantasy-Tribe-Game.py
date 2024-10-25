@@ -534,6 +534,7 @@ class GameStateManager:
             f.write("\n".join(story))
 
     def load_game_state(self, filename: str):
+        self.game_history = GameHistory()
         with open(filename, 'r') as f:
             loaded_history = json.load(f)
 

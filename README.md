@@ -58,7 +58,7 @@ The game supports four LLM providers:
 3. **Gemini**
    - Requires Google API key
 
-For the story LLM, a structured output is needed. For the summary LLM, which compresses the last turns inernally, you can choose between json mode, requiring structured output, and raw mode, using normal text mode.
+For the story LLM, a structured output is needed. For the summary LLM, which compresses the last turns internally, you can choose between json mode, requiring structured output, and raw mode, using normal text mode.
 
 ## Getting Started
 

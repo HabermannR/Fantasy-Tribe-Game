@@ -35,13 +35,12 @@ import copy
 import gradio as gr
 from datetime import datetime
 
-from typing import List, Literal,  Tuple, Optional
-from typing_extensions import TypedDict
+from typing import List, Literal,  Tuple, Optional, Dict, Any
 
 from pydantic import BaseModel, Field
 from Language import Language, translations
 from LLM_manager import (LLMContext, Config, ModelConfig,
-                         SummaryModelConfig, LLMProvider, SummaryMode, ResponseTypes)
+                         SummaryModelConfig, LLMProvider, SummaryMode)
 
 SUPPORTED_LANGUAGES = ["english", "german"]
 random.seed(datetime.now().timestamp())
@@ -90,27 +89,16 @@ class StartCharacter(BaseModel):
     title: str
 
 
-class StartCharacterDict(TypedDict):
-    name: str
-    title: str
-
-
 class Character(BaseModel):
     name: str
     title: str
-    #relationships: Optional[List[Relationship]]
-    relationships: List[Relationship]
+    relationships: Optional[List[Relationship]]
+    #relationships: List[Relationship]
 
 
 class ForeignCharacter(Character):
     tribe: str
 
-
-class TribeTypeDict(TypedDict):
-    name: str
-    description: str
-    development: DevelopmentType
-    stance: DiplomaticStance
 
 class TribeType(BaseModel):
     name: str
@@ -118,11 +106,12 @@ class TribeType(BaseModel):
     development: DevelopmentType
     stance: DiplomaticStance
 
-class TribesResponseDict(TypedDict):
-    tribes: List[TribeTypeDict]
-
 class TribesResponse(BaseModel):
     tribes: List[TribeType]
+
+class ForeignTribeType(TribeType):
+    diplomatic_status: DiplomaticStatus
+    leaders: List[Character]
 
 
 DIPLOMATIC_STATUS_TRANSLATIONS = {
@@ -189,11 +178,6 @@ def get_tribe_orientation(development: DevelopmentType, stance: DiplomaticStance
     }
 
     return descriptions[development][stance][language]
-
-
-class ForeignTribeType(TribeType):
-    diplomatic_status: DiplomaticStatus
-    leaders: List[Character]
 
 
 class TextFormatter:
@@ -369,6 +353,24 @@ class GameHistory:
         ])
 
 
+class HiddenGameState(BaseModel):
+    secret_relationships: Dict[str, Dict[str, str]] = {}  # character -> {actual_loyalty, secret_role, etc}
+    long_term_plots: List[Dict[str, Any]] = []           # list of plots with their details
+    #hidden_goals: Dict[str, Dict[str, Any]] = {}         # tribe -> {goal, progress}
+    prophecies: List[Dict[str, Any]] = []                # list of prophecies
+    #power_struggles: Dict[str, Dict[str, Any]] = {}      # tribe -> {description, intensity}
+
+    def to_context_string(self) -> str:
+        return f"""
+        Hidden Game State, not visible to the player:
+        Secret Relationships: {json.dumps(self.secret_relationships, indent=2)}
+        Active Plots: {json.dumps(self.long_term_plots, indent=2)}
+        Prophecies: {json.dumps(self.prophecies, indent=2)}
+        """
+    #
+    # Hidden Goals: {json.dumps(self.hidden_goals, indent=2)}
+    # Power Struggles: {json.dumps(self.power_struggles, indent=2)}
+
 # Main GameState class
 class GameStateBase(BaseModel):
     tribe: TribeType
@@ -376,12 +378,10 @@ class GameStateBase(BaseModel):
     foreign_tribes: List[ForeignTribeType]
     situation: str
     event_result: str
+    hidden_game_state: HiddenGameState
 
 
 class CombinedStateAndChoices(GameStateBase):
-    choices: List[ActionChoice]
-
-class CombinedStateAndChoicesDict(TypedDict):
     choices: List[ActionChoice]
 
 
@@ -407,7 +407,13 @@ class GameState(GameStateBase):
     def to_context_string(self, language) -> str:
         tribe_text = self.text_formatter.format_tribe_description_llm(self.tribe, self.leaders, True)
         foreign_tribes_text = self.text_formatter.format_foreign_tribes(self.foreign_tribes, True, language)
-        return tribe_text + foreign_tribes_text
+        hidden_state_text = self.hidden_game_state.to_context_string()
+
+        return f"""
+    {tribe_text}
+    {foreign_tribes_text}
+    {hidden_state_text}
+        """
 
     def tribe_string(self, language) -> str:
         text = self.text_formatter.export_tribe_only(self.tribe, self.leaders, self.foreign_tribes, language)
@@ -425,7 +431,8 @@ class GameState(GameStateBase):
             leaders=[leader_character],
             foreign_tribes=[],
             situation="",
-            event_result=""
+            event_result="",
+            hidden_game_state=HiddenGameState()
         )
 
     def update(self, new_state: GameStateBase):
@@ -568,8 +575,7 @@ class GameStateManager:
         if external_choice != "":
             tribe1 = f"- Must be {external_choice}. Mention the race in the description."
         else:
-            tribe1 = f"""- Must be {selected_combinations[0][0]} in development and {selected_combinations[0][1]} in diplomacy
-        - Should fit the description: {orientations[0]}"""
+            tribe1 = ""
 
         # Construct the prompt with the specific requirements for each tribe
         messages = [
@@ -579,32 +585,32 @@ class GameStateManager:
             },
             {
                 "role": "user",
-                "content": f"""Create exactly three unique and diverse tribes as JSON. Each tribe should have a distinctive name, detailed description, development type (magical/hybrid/practical) and stance (peaceful/neutral/aggressive). Make them interesting and varied.
+                "content": f"""Create exactly three tribes as JSON:
 
-    Tribe 1: 
-    {tribe1}
+ALL fields must be included for each tribe. 
 
-    Tribe 2:
-    - Must be {selected_combinations[1][0]} in development and {selected_combinations[1][1]} in diplomacy
-    - Should fit the description: {orientations[1]}
+1. First tribe MUST have:
+   - tribe_development: {selected_combinations[0][0]}
+   - tribe_stance: {selected_combinations[0][1]}
+   - Theme: {orientations[0]}
+   {tribe1}
 
-    Tribe 3:
-    - Must be {selected_combinations[2][0]} in development and {selected_combinations[2][1]} in diplomacy
-    - Should fit the description: {orientations[2]}
+2. Second tribe MUST have:
+   - tribe_development: {selected_combinations[1][0]}
+   - tribe_stance: {selected_combinations[1][1]}
+   - Theme: {orientations[1]}
 
-    For each tribe provide:
-    1. A unique tribe name (do not use 'Sylvan')
-    2. A description of the tribe without mentioning the tribe name, and do not quote the given description directly, but name the race
-    3. Its DevelopmentType
-    4. Its DiplomaticStance"""
+3. Third tribe MUST have:
+   - tribe_development: {selected_combinations[2][0]}
+   - tribe_stance: {selected_combinations[2][1]}
+   - Theme: {orientations[2]}
+
+Each tribe must have a unique name and detailed description. The description should mention the race but not the tribe name.
+ALL four fields are required for each tribe."""
             }
         ]
 
-        response_types = ResponseTypes(
-            pydantic_model=TribesResponse,
-            typed_dict=TribesResponseDict
-        )
-        tribes = self.llm_context.make_story_call(messages, response_types, max_tokens=2000)
+        tribes = self.llm_context.make_story_call(messages, TribesResponse, max_tokens=2000)
 
         if tribes:
             self.current_tribe_choices = tribes
@@ -629,11 +635,8 @@ class GameStateManager:
 {chosen_tribe.description}. """
             }
         ]
-        response_types = ResponseTypes(
-            pydantic_model=StartCharacter,
-            typed_dict=StartCharacterDict
-        )
-        leader = self.llm_context.make_story_call(messages, response_types, max_tokens=2000)
+
+        leader = self.llm_context.make_story_call(messages, StartCharacter, max_tokens=2000)
 
         if leader:
             print(textwrap.fill(f"\nLeader: {leader}", width=80, initial_indent="   ",
@@ -646,123 +649,184 @@ class GameStateManager:
             return "Due to the recent neutral or negative outcome, provide higher probabilities of success for the next choices (between 0.6 and 0.9)."
         return "Provide balanced probabilities of success for the next choices (between 0.5 and 0.8)."
 
+    def get_choice_type_instructions(self, choice_type: EventType) -> dict:
+        # Base instructions for all types
+        base_instructions = {
+            "single_event": {
+                "instruction": "create three distinct choices that reflect the tribe's nature",
+                "extra": ""
+            },
+            "reaction": {
+                "instruction": "create a reaction to the last outcome",
+                "extra": "Include a foreign character in the reaction."
+            },
+            "followup": {
+                "instruction": "create a follow up to the last outcome",
+                "extra": "Keep choices thematically close to the last action."
+            }
+        }
+
+        # Only add specific extra instructions for single_event type
+        if choice_type == "single_event":
+            # Get development-specific instructions
+            dev_instructions = {
+                "magical": """
+                    - Include one ritual or mystical option
+                    - Consider supernatural consequences
+                    - Add choices involving magical resources""",
+                "practical": """
+                    - Focus on infrastructure and resource management
+                    - Include diplomatic or trade options
+                    - Add choices about technological advancement""",
+                "hybrid": """
+                    - Balance magical and practical approaches
+                    - Include choices that combine both aspects
+                    - Consider the interaction between magic and technology"""
+            }
+
+            # Get stance-specific instructions
+            stance_instructions = {
+                "peaceful": """
+                    - Prioritize diplomatic solutions
+                    - Focus on defensive and growth options
+                    - Avoid direct confrontation choices""",
+                "neutral": """
+                    - Balance aggressive and peaceful options
+                    - Include pragmatic choices
+                    - Add opportunities for strategic positioning""",
+                "aggressive": """
+                    - Include direct confrontation options
+                    - Focus on expansion or dominance
+                    - Add choices that challenge rivals"""
+            }
+
+            # Only add relevant instructions based on tribe's development and stance
+            development = self.current_game_state.tribe.development
+            stance = self.current_game_state.tribe.stance
+
+            extra = ""
+            if development in dev_instructions:
+                extra += dev_instructions[development]
+            if stance in stance_instructions:
+                extra += "\n" + stance_instructions[stance]
+
+            base_instructions["single_event"]["extra"] = extra
+
+        return base_instructions[choice_type]
+
     def update_and_generate_choices(self, choice_type: EventType) -> None:
+        # 1. Update history
         recent_history = self.game_history.get_recent_short_history(num_events=1)
         if recent_history != "":
             self.game_history.short_history = self.llm_context.get_summary(
                 self.game_history.short_history + recent_history)
+
+        # 2. Get probability adjustment
         prob_adjustment = self.get_probability_adjustment()
 
-        # Build tribes prompt for potential new factions
+        # 3. Build tribes prompt
         tribes_prompt = ""
-        enemy_count = sum(
-            1 for tribe in self.current_game_state.foreign_tribes if tribe.diplomatic_status == "enemy")
-        neutral_count = sum(
-            1 for tribe in self.current_game_state.foreign_tribes if
-            tribe.diplomatic_status == "neutral")
+        enemy_count = sum(1 for tribe in self.current_game_state.foreign_tribes
+                          if tribe.diplomatic_status == "enemy")
+        neutral_count = sum(1 for tribe in self.current_game_state.foreign_tribes
+                            if tribe.diplomatic_status == "neutral")
 
         if self.current_game_state.turn > 5 and enemy_count < 1:
             tribes_prompt += "* Add one enemy faction if it fits the current situation\n"
         if self.current_game_state.turn > 3 and neutral_count < 2:
             tribes_prompt += "* Add one or two neutral factions if it fits the current situation\n"
 
-        # Build action context if there's a chosen action
-        action_context = ""
-        if self.current_game_state.chosen_action:
-            action_context = f"""Action: {self.current_game_state.chosen_action.caption}
-        
-    {self.current_game_state.chosen_action.description}
+        # 4. Build action context
+        action_context = (
+            f"""Action: {self.current_game_state.chosen_action.caption}
 
-    Outcome: {self.current_game_state.last_outcome}"""
-        else:
-            action_context = f"""This is the beginning of the {self.current_game_state.tribe.name}. 
-Treat the last action and the outcome as neutral, and tell something about their background."""
+            {self.current_game_state.chosen_action.description}
 
-        # Define choice type specific instructions
-        choice_types = {
-            "single_event": {"instruction": "create a new event", "extra": ""},
-            "reaction": {"instruction": "create a reaction to this last outcome",
-                                 "extra": "Include a foreign character in the reaction."},
-            "followup": {"instruction": "create a follow up to this last outcome",
-                                 "extra": "Keep choices thematically close to the last action."}
-        }
+            Outcome: {self.current_game_state.last_outcome}"""
+            if self.current_game_state.chosen_action
+            else
+            f"""This is the beginning of the {self.current_game_state.tribe.name}. 
+        Treat the last action and the outcome as neutral, and tell something about their background."""
+        )
 
-        if choice_type not in choice_types:
-            raise ValueError(f"Invalid choice type: {choice_type}")
+        # 5. Define choice types and get instructions
+        choice_type_fields = self.get_choice_type_instructions(choice_type)
 
-        choice_type_fields = choice_types[choice_type]
-
-        # Build the combined context
-        context = f"""Gamestate: 
-{self.current_game_state.to_context_string(self.language)}
+        # 6. Create messages with JSON structure first
+        messages = [
+            {
+                "role": "system",
+                "content": """You are a game master for a tribal fantasy strategy game managing both state updates and story progression."""
+            },
+            {
+                "role": "user",
+                "content": f"""Current game state: 
+    {self.current_game_state.to_context_string(self.language)}
 
     History: {self.game_history.short_history}
     Previous: {self.current_game_state.previous_situation}
 
-    {action_context}"""
+    {action_context}
 
-        # Combined instructions for both state update and choice generation
-        instructions = f"""
-    First, update the game state:
+    Update the game state following these rules:
 
     1. Tribe: Only change the tribe name and its stances after major events
-    
+
     2. Leaders (max 5):
-       - Update names, titles and relationships, both to tribe leaders as well as to leaders of foreign tribes
+       - Update names, titles and relationships
        - Add special roles if warranted
        - Big changes only after important events
-       
-   3. Foreign Tribes:
+
+    3. Foreign Tribes:
        - For each tribe: status, name, description, development, stance, leaders (max 2)
-       - For each leader of a foreign tribe: Names, titles, relationships to the leaders of the players tribe
-       - DiplomaticStatus changes require multiple turns from Neutral to Ally
+       - For each leader: Names, titles, relationships
+       - DiplomaticStatus changes require multiple turns
        - Consider development/stance compatibility
        {tribes_prompt}
 
     4. Event Results:
-       - 2 paragraphs narrative (event_result) based on the outcome of the last event
-       - Events may continue, or you can decide to finish an event and introduce a new one. When finishing, give some closure here. 
+       - 2 paragraphs narrative based on the outcome
+       - Events may continue or conclude with closure
+
+    5. Situation:
+       - Current state summary based on outcome
+       - Add new developments as needed
        
-   5. Situation:
-       - Current state summary based on the outcome of the last event
-       - You can add new developments to make it more interesting, or to introduce new tribes
+   6. Hidden game state:
+       - Track potential future developments, secrets, and hidden relationships
+       - This information must be revealed through either:
+         a) Event Results: Weave revelations naturally into the narrative
+         b) Situation Updates: Include discoveries as new developments
+       - Rules for using hidden information:
+       - Cannot directly reference hidden information in choices
+       - Must first introduce/reveal information through narrative
+       - Revelations should feel natural and properly timed
+       - Can partially reveal information to build suspense
 
     Then, {choice_type_fields['instruction']} and provide 3 possible next choices:
     {choice_type_fields['extra']}
     Each choice has:
-    - A caption
-    - Description that weaves implications and broader context organically
-    - Probability of success
-    {prob_adjustment}
-    One choice should have high probability
-    Include at least one aggressive option (probability based on tribe info)
+    - Caption
+    - Description with implications and context
+    - Probability of success: {prob_adjustment}
+    - One choice should have high probability
+    - Include at least one aggressive option
 
-    Maintain consistency with game state, action outcomes, and existing relationships.
-    Output the response as JSON with both state updates and next choices."""
-
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a game master for a tribal fantasy strategy game managing both state updates and story progression. Output answers as JSON."
-            },
-            {
-                "role": "user",
-                "content": context + instructions
+    Maintain consistency with game state, action outcomes, and relationships."""
             }
         ]
 
-        response_types = ResponseTypes(
-            pydantic_model=CombinedStateAndChoices,
-            typed_dict=CombinedStateAndChoicesDict
-        )
+
         # Define a combined response class that includes both state and choices
-        if combined_response := self.llm_context.make_story_call(messages, response_types, max_tokens=7000):
+        if combined_response := self.llm_context.make_story_call(messages, CombinedStateAndChoices, max_tokens=7000):
             # Update game state using dict unpacking
-            state_fields = {
-                field: getattr(combined_response, field)
-                for field in ['tribe', 'leaders', 'foreign_tribes', 'situation', 'event_result']
-            }
-            self.current_game_state.update(GameStateBase(**state_fields))
+            #state_fields = {
+            #    field: getattr(combined_response, field)
+            #    for field in ['tribe', 'leaders', 'foreign_tribes', 'situation', 'event_result', 'hidden_game_state']
+            #}
+            #self.current_game_state.update(GameStateBase(**state_fields))
+            new_state = GameStateBase.model_validate(combined_response)
+            self.current_game_state.update(new_state)
 
             # Update choices
             self.current_game_state.current_action_choices = NextChoices(choices=combined_response.choices)
@@ -1016,12 +1080,6 @@ def create_gui():
                     label="Story Model (OpenAI)",
                     visible=config.story_config.provider == LLMProvider.OPENAI
                 )
-                story_model_gemini_dropdown = gr.Dropdown(
-                    choices=["gemini-1.5-pro-latest", "gemini-1.5-flash"],
-                    value="gemini-1.5-pro-latest",
-                    label="Story Model (Gemini)",
-                    visible=config.story_config.provider == LLMProvider.GEMINI
-                )
                 story_model_local_input = gr.Textbox(
                     value=config.story_config.model_name if config.story_config.provider == LLMProvider.LOCAL else "Qwen2.5-14B-Instruct:latest",
                     label="Story Model (Local)",
@@ -1054,12 +1112,6 @@ def create_gui():
                     label="Summary Model (OpenAI)",
                     visible=config.summary_config.provider == LLMProvider.OPENAI
                 )
-                summary_model_gemini_dropdown = gr.Dropdown(
-                    choices=["gemini-1.5-pro-latest", "gemini-1.5-flash"],
-                    value="gemini-1.5-pro-latest",
-                    label="Summary Model (Gemini)",
-                    visible=config.summary_config.provider == LLMProvider.GEMINI
-                )
                 summary_model_local_input = gr.Textbox(
                     value=config.summary_config.model_name if config.summary_config.provider == LLMProvider.LOCAL else "Qwen2.5-14B-Instruct:latest",
                     label="Summary Model (Local)",
@@ -1086,7 +1138,6 @@ def create_gui():
                 return {
                     story_model_dropdown: gr.update(visible=provider == LLMProvider.ANTHROPIC.value),
                     story_model_openai_dropdown: gr.update(visible=provider == LLMProvider.OPENAI.value),
-                    story_model_gemini_dropdown: gr.update(visible=provider == LLMProvider.GEMINI.value),
                     story_model_local_input: gr.update(visible=provider == LLMProvider.LOCAL.value),
                     story_local_url_input: gr.update(visible=provider == LLMProvider.LOCAL.value)
                 }
@@ -1094,7 +1145,7 @@ def create_gui():
             story_provider_dropdown.change(
                 update_story_input_visibility,
                 inputs=[story_provider_dropdown],
-                outputs=[story_model_dropdown, story_model_openai_dropdown, story_model_gemini_dropdown, story_model_local_input,
+                outputs=[story_model_dropdown, story_model_openai_dropdown, story_model_local_input,
                          story_local_url_input]
             )
 
@@ -1102,7 +1153,6 @@ def create_gui():
                 return {
                     summary_model_dropdown: gr.update(visible=provider == LLMProvider.ANTHROPIC.value),
                     summary_model_openai_dropdown: gr.update(visible=provider == LLMProvider.OPENAI.value),
-                    summary_model_gemini_dropdown: gr.update(visible=provider == LLMProvider.GEMINI.value),
                     summary_model_local_input: gr.update(visible=provider == LLMProvider.LOCAL.value),
                     summary_local_url_input: gr.update(visible=provider == LLMProvider.LOCAL.value)
                 }
@@ -1110,7 +1160,7 @@ def create_gui():
             summary_provider_dropdown.change(
                 update_summary_input_visibility,
                 inputs=[summary_provider_dropdown],
-                outputs=[summary_model_dropdown, summary_model_openai_dropdown, summary_model_gemini_dropdown,
+                outputs=[summary_model_dropdown, summary_model_openai_dropdown,
                          summary_model_local_input, summary_local_url_input]
             )
 
@@ -1125,17 +1175,15 @@ def create_gui():
                 }
 
             # Function to save settings
-            def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_gemini, story_model_local,
-                              story_local_url, summary_provider, summary_model_anthropic, summary_model_openai, summary_model_gemini,
+            def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_local,
+                              story_local_url, summary_provider, summary_model_anthropic, summary_model_openai,
                               summary_model_local, summary_local_url, summary_mode):
                 story_model = story_model_anthropic if story_provider == LLMProvider.ANTHROPIC.value else \
                     story_model_openai if story_provider == LLMProvider.OPENAI.value else \
-                    story_model_gemini if story_provider == LLMProvider.GEMINI.value else \
-                            story_model_local
+                                story_model_local
                 summary_model = summary_model_anthropic if summary_provider == LLMProvider.ANTHROPIC.value else \
                     summary_model_openai if summary_provider == LLMProvider.OPENAI.value else \
-                    summary_model_gemini if summary_provider == LLMProvider.GEMINI.value else \
-                            summary_model_local
+                                summary_model_local
 
                 new_config = Config(
                     story_config=ModelConfig(
@@ -1166,8 +1214,8 @@ def create_gui():
             settings_save_btn.click(
                 save_settings,
                 inputs=[language_dropdown, story_provider_dropdown, story_model_dropdown,
-                        story_model_openai_dropdown, story_model_gemini_dropdown, story_model_local_input, story_local_url_input,
-                        summary_provider_dropdown, summary_model_dropdown, summary_model_openai_dropdown, summary_model_gemini_dropdown,
+                        story_model_openai_dropdown, story_model_local_input, story_local_url_input,
+                        summary_provider_dropdown, summary_model_dropdown, summary_model_openai_dropdown,
                         summary_model_local_input, summary_local_url_input, summary_mode_dropdown],
                 outputs=[title_markdown, game_tab, race_theme, settings_message]
             )

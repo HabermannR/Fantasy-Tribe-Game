@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from Language import Language, translations
 from LLM_manager import (LLMContext, Config, ModelConfig,
                          SummaryModelConfig, LLMProvider, SummaryMode)
+from prompt_generator import generate_game_prompt
 
 SUPPORTED_LANGUAGES = ["english", "german"]
 random.seed(datetime.now().timestamp())
@@ -332,7 +333,6 @@ Tribe description: {tribe.description}
 class GameHistory:
     def __init__(self):
         self.history: List['GameState'] = []
-        self.short_history = ""
 
     def add_state(self, state: 'GameState'):
         self.history.append(copy.deepcopy(state))
@@ -390,6 +390,7 @@ class GameState(GameStateBase):
     current_action_choices: Optional['NextChoices'] = None
     chosen_action: Optional['ActionChoice'] = None
     last_outcome: Optional[OutcomeType] = None
+    short_history: str = ""
     turn: int = 0
     streak_count: int = 0
     tier: int = 1
@@ -482,6 +483,7 @@ class GameStateManager:
 
     def initialize(self, tribe: TribeType, leader: StartCharacter):
         self.current_game_state = GameState.initialize(tribe, leader)
+        self.current_game_state.short_history = ""
         self.game_history = GameHistory()
         self.current_game_state.previous_situation = "Humble beginnings of the " + self.current_game_state.tribe.name
         self.current_game_state.last_outcome = "neutral"
@@ -523,6 +525,7 @@ class GameStateManager:
         self.current_game_state.turn += 1
 
     def save_all_game_states(self, filename: str):
+        filename  = "save//" + filename
         with open(filename, 'w') as f:
             json.dump(self.game_history.history, f, cls=EnumEncoder)
 
@@ -718,8 +721,8 @@ ALL four fields are required for each tribe."""
         # 1. Update history
         recent_history = self.game_history.get_recent_short_history(num_events=1)
         if recent_history != "":
-            self.game_history.short_history = self.llm_context.get_summary(
-                self.game_history.short_history + recent_history)
+            self.current_game_state.short_history = self.llm_context.get_summary(
+                self.current_game_state.short_history + recent_history)
 
         # 2. Get probability adjustment
         prob_adjustment = self.get_probability_adjustment()
@@ -750,7 +753,12 @@ ALL four fields are required for each tribe."""
         )
 
         # 5. Define choice types and get instructions
-        choice_type_fields = self.get_choice_type_instructions(choice_type)
+        event_prompt = generate_game_prompt(
+            event_type=choice_type,
+            tier=self.current_game_state.tier,
+            development=self.current_game_state.tribe.development,
+            stance=self.current_game_state.tribe.stance
+        )
 
         # 6. Create messages with JSON structure first
         messages = [
@@ -763,7 +771,7 @@ ALL four fields are required for each tribe."""
                 "content": f"""Current game state: 
     {self.current_game_state.to_context_string(self.language)}
 
-    History: {self.game_history.short_history}
+    History: {self.current_game_state.short_history}
     Previous: {self.current_game_state.previous_situation}
 
     {action_context}
@@ -803,16 +811,7 @@ ALL four fields are required for each tribe."""
        - Revelations should feel natural and properly timed
        - Can partially reveal information to build suspense
 
-    Then, {choice_type_fields['instruction']} and provide 3 possible next choices:
-    {choice_type_fields['extra']}
-    Each choice has:
-    - Caption
-    - Description with implications and context
-    - Probability of success: {prob_adjustment}
-    - One choice should have high probability
-    - Include at least one aggressive option
-
-    Maintain consistency with game state, action outcomes, and relationships."""
+ {event_prompt}"""
             }
         ]
 
@@ -911,9 +910,6 @@ def create_gui():
             *updates
         )
 
-    def save_current_game():
-        game_manager.save_all_game_states('test.json')
-        return "Game saved successfully!"
 
     def load_saved_game(filename):
         try:
@@ -1047,7 +1043,6 @@ def create_gui():
                     action_desc3 = gr.Textbox(label="", lines=3, visible=False)
 
             with gr.Row():
-                save_button = gr.Button("Save Game")
                 load_file = gr.File(label="Select Save File", file_types=[".json"])
                 load_button = gr.Button("Load Game")
 
@@ -1272,11 +1267,6 @@ def create_gui():
                 action_button2, action_desc2,
                 action_button3, action_desc3
             ]
-        )
-
-        save_button.click(
-            save_current_game,
-            outputs=[message_display]
         )
 
         load_button.click(

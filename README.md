@@ -14,10 +14,10 @@ Fantasy Tribe Game is an interactive text-based strategy game where you lead you
 - Choose from three unique, procedurally generated tribes
 - seed the tribe generation using one of 74 mystical races
 - Make strategic decisions that impact your tribe's development
-- Dynamic quest system with multiple outcomes
 - Relationship system (Allies, Neutrals and Enemies)
 - Tier progression system (not working right now)
 - Persistent game state with save/load functionality
+- new hidden information not presented to the player, intended as memory for the LLM
 
 ## Installation
 
@@ -37,11 +37,10 @@ pip install -r requirements.txt
 - openai
 - gradio
 - anthropic (optional)
-- google.generativeai (optional)
 
 ### LLM Provider Configuration
 
-The game supports four LLM providers:
+The game supports three LLM providers:
 
 1. **Local Model**
    - Tested with LM Studio
@@ -55,10 +54,8 @@ The game supports four LLM providers:
 3. **Anthropic**
    - Requires Anthropic API key
 
-3. **Gemini**
-   - Requires Google API key
-
 For the story LLM, a structured output is needed. For the summary LLM, which compresses the last turns internally, you can choose between json mode, requiring structured output, and raw mode, using normal text mode.
+Gemini is not working reliable in structured mode, completly removed a t the moment, maybe reintroduce later for summary in raw mode only.
 
 ## Getting Started
 

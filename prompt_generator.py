@@ -20,11 +20,11 @@ def generate_game_prompt(
 - Ensure each choice has clear consequences
 - Include options that use current capabilities""",
         "reaction": """
-- Create a response to the last outcome
+- Create a response to the last outcome by creating three distinct choices
 - Include a foreign character in the reaction
 - Show how prior choices affect this situation""",
         "followup": """
-- Build directly on the last decision
+- Build directly on the last decision by creating three distinct choices
 - Keep choices thematically connected
 - Show how the situation has evolved"""
     }

@@ -547,11 +547,8 @@ class GameStateManager:
         self.game_history = GameHistory()
         with open(filename, 'r') as f:
             loaded_history = json.load(f)
-
-        # Convert enum dictionaries to actual enum values
-        converted_history = loaded_history
         # Convert each history entry to a GameState object
-        history: List[GameState] = [GameState(**state) for state in converted_history]
+        history: List[GameState] = [GameState(**state) for state in loaded_history]
         # Set the current game state to the last item in the history
         self.current_game_state = copy.deepcopy(history[-1])
 

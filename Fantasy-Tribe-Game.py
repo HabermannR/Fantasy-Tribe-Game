@@ -32,6 +32,7 @@ import json
 import random
 import textwrap
 import copy
+import os
 import gradio as gr
 from datetime import datetime
 
@@ -526,6 +527,8 @@ class GameStateManager:
 
     def save_all_game_states(self, filename: str):
         filename  = "save//" + filename
+        if not os.path.exists("save"):
+            os.makedirs("save")
         with open(filename, 'w') as f:
             json.dump(self.game_history.history, f, cls=EnumEncoder)
 
@@ -810,8 +813,11 @@ ALL four fields are required for each tribe."""
        - Must first introduce/reveal information through narrative
        - Revelations should feel natural and properly timed
        - Can partially reveal information to build suspense
+    
+    7. New choices:
+{event_prompt}
 
- {event_prompt}"""
+{prob_adjustment}"""
             }
         ]
 
@@ -1064,7 +1070,7 @@ def create_gui():
                     label="Story LLM Provider"
                 )
                 story_model_dropdown = gr.Dropdown(
-                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620"],
+                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-5-haiku-20241022"],
                     value="claude-3-5-sonnet-20241022",
                     label="Story Model (Anthropic)",
                     visible=config.story_config.provider == LLMProvider.ANTHROPIC
@@ -1073,6 +1079,12 @@ def create_gui():
                     choices=["gpt-4o", "gpt-4o-mini"],
                     value="gpt-4o",
                     label="Story Model (OpenAI)",
+                    visible=config.story_config.provider == LLMProvider.OPENAI
+                )
+                story_model_gemini_dropdown = gr.Dropdown(
+                    choices=["models/gemini-1.5-pro", "models/gemini-1.5-flash-latest"],
+                    value="models/gemini-1.5-pro",
+                    label="Story Model (Gemini)",
                     visible=config.story_config.provider == LLMProvider.OPENAI
                 )
                 story_model_local_input = gr.Textbox(
@@ -1096,7 +1108,7 @@ def create_gui():
                     label="Summary LLM Provider"
                 )
                 summary_model_dropdown = gr.Dropdown(
-                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620"],
+                    choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-5-haiku-20241022"],
                     value="claude-3-5-sonnet-20241022",
                     label="Summary Model (Anthropic)",
                     visible=config.summary_config.provider == LLMProvider.ANTHROPIC
@@ -1133,6 +1145,7 @@ def create_gui():
                 return {
                     story_model_dropdown: gr.update(visible=provider == LLMProvider.ANTHROPIC.value),
                     story_model_openai_dropdown: gr.update(visible=provider == LLMProvider.OPENAI.value),
+                    story_model_gemini_dropdown: gr.update(visible=provider == LLMProvider.GEMINI.value),
                     story_model_local_input: gr.update(visible=provider == LLMProvider.LOCAL.value),
                     story_local_url_input: gr.update(visible=provider == LLMProvider.LOCAL.value)
                 }
@@ -1140,8 +1153,8 @@ def create_gui():
             story_provider_dropdown.change(
                 update_story_input_visibility,
                 inputs=[story_provider_dropdown],
-                outputs=[story_model_dropdown, story_model_openai_dropdown, story_model_local_input,
-                         story_local_url_input]
+                outputs=[story_model_dropdown, story_model_openai_dropdown, story_model_gemini_dropdown,
+                         story_model_local_input, story_local_url_input]
             )
 
             def update_summary_input_visibility(provider):
@@ -1170,15 +1183,16 @@ def create_gui():
                 }
 
             # Function to save settings
-            def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_local,
+            def save_settings(language, story_provider, story_model_anthropic, story_model_openai, story_model_gemini, story_model_local,
                               story_local_url, summary_provider, summary_model_anthropic, summary_model_openai,
                               summary_model_local, summary_local_url, summary_mode):
                 story_model = story_model_anthropic if story_provider == LLMProvider.ANTHROPIC.value else \
                     story_model_openai if story_provider == LLMProvider.OPENAI.value else \
-                                story_model_local
+                    story_model_gemini if story_provider == LLMProvider.GEMINI.value else \
+                    story_model_local
                 summary_model = summary_model_anthropic if summary_provider == LLMProvider.ANTHROPIC.value else \
                     summary_model_openai if summary_provider == LLMProvider.OPENAI.value else \
-                                summary_model_local
+                    summary_model_local
 
                 new_config = Config(
                     story_config=ModelConfig(
@@ -1209,7 +1223,7 @@ def create_gui():
             settings_save_btn.click(
                 save_settings,
                 inputs=[language_dropdown, story_provider_dropdown, story_model_dropdown,
-                        story_model_openai_dropdown, story_model_local_input, story_local_url_input,
+                        story_model_openai_dropdown, story_model_gemini_dropdown, story_model_local_input, story_local_url_input,
                         summary_provider_dropdown, summary_model_dropdown, summary_model_openai_dropdown,
                         summary_model_local_input, summary_local_url_input, summary_mode_dropdown],
                 outputs=[title_markdown, game_tab, race_theme, settings_message]

@@ -37,13 +37,14 @@ from Language import Language
 
 from openai import OpenAI
 import anthropic
+import instructor
+import google.generativeai as genai
 
 
 T = TypeVar('T')
 
 class SummaryModel(BaseModel):
     summary: str
-
 
 class SummaryModelDict(TypedDict):
     summary: str
@@ -52,6 +53,7 @@ class LLMProvider(Enum):
     LOCAL = "local"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
 
 
 class ModelType(Enum):
@@ -94,6 +96,7 @@ class Config:
         self.language = language
         self.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+        self.GEMINI_API_KEY = os.getenv("GEMINI_KEY", "")
 
     @classmethod
     def default_config(cls, language: Language = "english"):
@@ -234,6 +237,47 @@ class AnthropicStrategy(LLMStrategy):
         except Exception as e:
             raise RuntimeError(f"Anthropic API call failed: {str(e)}")
 
+class GeminiStrategy(LLMStrategy):
+    def __init__(self, model_config: ModelConfig, api_key: str):
+        super().__init__(model_config, api_key)
+        genai.configure(api_key=api_key)  # alternative API key configuration
+        self.client = instructor.from_gemini(
+            client=genai.GenerativeModel(
+                model_name=self.model_config.model_name,  # model defaults to "gemini-pro"
+            ),
+            mode=instructor.Mode.GEMINI_JSON,
+        )
+
+    def make_api_call(
+            self,
+            messages: List[Dict[str, str]],
+            response_types: T = None,
+            max_tokens: Optional[int] = None
+    ) -> Union[T, str]:
+        try:
+            start_time = time.time()
+            if isinstance(self.model_config, SummaryModelConfig) and self.model_config.mode == SummaryMode.RAW:
+                response = self.client.messages.create(
+                    model=self.model_config.model_name,
+                    max_tokens=max_tokens,
+                    system=messages[0]['content'],
+                    messages=messages[1:]
+                )
+                result = response.content[0].text
+            else:
+                result = self.client.chat.completions.create(
+                    messages=messages[1:],
+                    response_model=response_types,
+                )
+
+            end_time = time.time()
+            print(f"Time in Gemini ({self.model_config.model_name}): ", end_time - start_time)
+            #print("Input tokens: ", response.usage.input_tokens, "Output tokens: ", response.usage.output_tokens)
+            return result
+
+        except Exception as e:
+            raise RuntimeError(f"Anthropic API call failed: {str(e)}")
+
 
 class OpenAIStrategy(LLMStrategy):
     def __init__(self, model_config: ModelConfig, api_key: str):
@@ -323,6 +367,8 @@ class LLMContext:
             return AnthropicStrategy(model_config, self.config.ANTHROPIC_API_KEY)
         elif model_config.provider == LLMProvider.OPENAI:
             return OpenAIStrategy(model_config, self.config.OPENAI_API_KEY)
+        elif model_config.provider == LLMProvider.GEMINI:
+            return GeminiStrategy(model_config, self.config.GEMINI_API_KEY)
         else:  # LOCAL
             return LocalModelStrategy(model_config)
 

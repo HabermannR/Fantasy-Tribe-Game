@@ -109,8 +109,12 @@ class TribeType(BaseModel):
     development: DevelopmentType
     stance: DiplomaticStance
 
+class TribeTypeSimple(BaseModel):
+    name: str
+    description: str
+
 class TribesResponse(BaseModel):
-    tribes: List[TribeType]
+    tribes: List[TribeTypeSimple]
 
 class ForeignTribeType(TribeType):
     diplomatic_status: DiplomaticStatus
@@ -561,6 +565,18 @@ class GameStateManager:
 
     def generate_tribe_choices(self, external_choice: str = "") -> TribesResponse:
         # Generate 3 unique combinations of development type and diplomatic stance
+        lang = translations.get(self.language, translations["english"])
+        available_races = [race for race in lang['race_themes'] if race]  # Filter out empty string
+        # Handle race selection
+        if external_choice == "":
+            # Select random races for all three tribes
+            race1, race2, race3 = random.sample(available_races, 3)
+        else:
+            race1 = external_choice
+            # Select random races for tribes 2 and 3
+            remaining_races = [r for r in available_races if r != external_choice]
+            race2, race3 = random.sample(remaining_races, 2)
+
 
         possible_combinations = [
             (dev, stance)
@@ -577,7 +593,7 @@ class GameStateManager:
         if external_choice != "":
             tribe1 = f"- Must be {external_choice}. Mention the race in the description."
         else:
-            tribe1 = ""
+            tribe1 = f"- Must be {race1}. Mention the race in the description."
 
         # Construct the prompt with the specific requirements for each tribe
         messages = [
@@ -591,39 +607,46 @@ class GameStateManager:
 
 ALL fields must be included for each tribe. 
 
-1. First tribe MUST have:
+1. First tribe must be:
    - tribe_development: {selected_combinations[0][0]}
    - tribe_stance: {selected_combinations[0][1]}
    - Theme: {orientations[0]}
    {tribe1}
 
-2. Second tribe MUST have:
+2. Second tribe must be:
    - tribe_development: {selected_combinations[1][0]}
    - tribe_stance: {selected_combinations[1][1]}
    - Theme: {orientations[1]}
+   - Must be {race2}. Mention the race in the description.
 
-3. Third tribe MUST have:
+3. Third tribe must be:
    - tribe_development: {selected_combinations[2][0]}
    - tribe_stance: {selected_combinations[2][1]}
    - Theme: {orientations[2]}
+   - Must be {race3}. Mention the race in the description.
 
-Each tribe must have a unique name and detailed description. The description should mention the race but not the tribe name.
-ALL four fields are required for each tribe."""
+Each tribe must have a unique name and detailed description. The description should mention the race but not the tribe name."""
             }
         ]
 
         tribes = self.llm_context.make_story_call(messages, TribesResponse, max_tokens=2000)
-
+        fulltribes = []
         if tribes:
-            self.current_tribe_choices = tribes
             print("\n=== Available Tribe Choices ===")
             for number, (choice, (dev_type, stance)) in enumerate(zip(tribes.tribes, selected_combinations)):
+                tribetemp = TribeType(
+                    name=choice.name,
+                    description=choice.description,
+                    development=dev_type,
+                    stance=stance
+                )
+                fulltribes.append(tribetemp)
                 tribe_type = get_tribe_orientation(dev_type, stance, self.language)
                 print(f"\n{number}. {choice.name}, {tribe_type}")
                 print(textwrap.fill(f"Description: {choice.description}", width=80, initial_indent="   ",
                                     subsequent_indent="   "))
 
-        return tribes
+        self.current_tribe_choices = fulltribes
 
     def get_leader(self, chosen_tribe: TribeType) -> StartCharacter:
         messages = [
@@ -1032,7 +1055,7 @@ def create_gui():
         game_manager.generate_tribe_choices(theme)
         if game_manager.current_tribe_choices:
             result = ""
-            for number, tribe in enumerate(game_manager.current_tribe_choices.tribes):
+            for number, tribe in enumerate(game_manager.current_tribe_choices):
                 tribe_type = get_tribe_orientation(tribe.development, tribe.stance, game_manager.language)
                 result += f"{number + 1}. {tribe.name}, "
                 result += f"{tribe_type}\n"
@@ -1046,7 +1069,7 @@ def create_gui():
         game_manager.reset()
         if game_manager.current_tribe_choices:
             chosen_tribe = next(
-                (tribe for index, tribe in enumerate(game_manager.current_tribe_choices.tribes, 1) if index == choice),
+                (tribe for index, tribe in enumerate(game_manager.current_tribe_choices, 1) if index == choice),
                 None)
             if chosen_tribe:
                 leader = game_manager.get_leader(chosen_tribe)

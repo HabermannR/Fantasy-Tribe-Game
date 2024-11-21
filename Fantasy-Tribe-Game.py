@@ -1144,7 +1144,7 @@ def create_gui():
                     visible=config.story_config.provider == LLMProvider.ANTHROPIC
                 )
                 story_model_openai_dropdown = gr.Dropdown(
-                    choices=["gpt-4o", "gpt-4o-mini", "gpt-4o-2024-11-20", "o1-preview","o1-mini"] ,
+                    choices=["gpt-4o", "gpt-4o-mini", "gpt-4o-2024-11-20"] ,
                     value="gpt-4o",
                     label="Story Model (OpenAI)",
                     visible=config.story_config.provider == LLMProvider.OPENAI

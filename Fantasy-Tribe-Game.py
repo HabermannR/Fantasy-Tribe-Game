@@ -36,7 +36,7 @@ import os
 import gradio as gr
 from datetime import datetime
 
-from typing import List, Literal,  Tuple, Optional, Dict, Any
+from typing import List, Literal, Tuple, Optional, Dict, Any
 
 from pydantic import BaseModel, Field
 from Language import Language, translations
@@ -57,14 +57,15 @@ class EnumEncoder(json.JSONEncoder):
 
 OutcomeType = Literal["positive", "neutral", "negative", "catastrophe"]
 OUTCOME_TYPES = ["positive", "neutral", "negative", "catastrophe"]
+
 EventType = Literal["single_event", "reaction", "followup"]
 EVENT_TYPES = ["single_event", "reaction", "followup"]
 
 DevelopmentType = Literal["magical", "hybrid", "practical"]
-DiplomaticStance = Literal["peaceful", "neutral", "aggressive"]
 DEVELOPMENT_TYPES = ["magical", "hybrid", "practical"]
-DIPLOMATIC_STANCES = ["peaceful", "neutral", "aggressive"]
 
+DiplomaticStance = Literal["peaceful", "neutral", "aggressive"]
+DIPLOMATIC_STANCES = ["peaceful", "neutral", "aggressive"]
 
 DiplomaticStatus = Literal["ally", "neutral", "enemy"]
 DIPLOMATIC_STATUS = ["ally", "neutral", "enemy"]
@@ -355,22 +356,18 @@ class GameHistory:
 
 
 class HiddenGameState(BaseModel):
-    secret_relationships: Dict[str, Dict[str, str]] = {}  # character -> {actual_loyalty, secret_role, etc}
-    long_term_plots: List[Dict[str, Any]] = []           # list of plots with their details
-    #hidden_goals: Dict[str, Dict[str, Any]] = {}         # tribe -> {goal, progress}
-    prophecies: List[Dict[str, Any]] = []                # list of prophecies
-    #power_struggles: Dict[str, Dict[str, Any]] = {}      # tribe -> {description, intensity}
+    secret_relationships: Optional[Dict[str, Dict[str, str]]] = None
+    long_term_plots: Optional[Dict[str, Dict[str, str]]] = None
+    prophecies: Optional[Dict[str, Dict[str, str]]] = None
 
-    def to_context_string(self) -> str:
-        return f"""
-        Hidden Game State, not visible to the player:
-        Secret Relationships: {json.dumps(self.secret_relationships, indent=2)}
-        Active Plots: {json.dumps(self.long_term_plots, indent=2)}
-        Prophecies: {json.dumps(self.prophecies, indent=2)}
-        """
-    #
-    # Hidden Goals: {json.dumps(self.hidden_goals, indent=2)}
-    # Power Struggles: {json.dumps(self.power_struggles, indent=2)}
+    #def to_context_string(self) -> str:
+    #    return f"""
+    #    Hidden Game State, not visible to the player:
+    #    Secret Relationships: {json.dumps(self.secret_relationships, indent=2)}
+    #    Active Plots: {json.dumps(self.long_term_plots, indent=2)}
+    #    Prophecies: {json.dumps(self.prophecies, indent=2)}
+    #    """
+
 
 # Main GameState class
 class GameStateBase(BaseModel):
@@ -409,13 +406,11 @@ class GameState(GameStateBase):
     def to_context_string(self, language) -> str:
         tribe_text = self.text_formatter.format_tribe_description_llm(self.tribe, self.leaders, True)
         foreign_tribes_text = self.text_formatter.format_foreign_tribes(self.foreign_tribes, True, language)
-        hidden_state_text = self.hidden_game_state.to_context_string()
+        #hidden_state_text = self.hidden_game_state.to_context_string()
 
         return f"""
-    {tribe_text}
-    {foreign_tribes_text}
-    {hidden_state_text}
-        """
+{tribe_text}
+{foreign_tribes_text}"""
 
     def tribe_string(self, language) -> str:
         text = self.text_formatter.export_tribe_only(self.tribe, self.leaders, self.foreign_tribes, language)
@@ -434,7 +429,11 @@ class GameState(GameStateBase):
             foreign_tribes=[],
             situation="",
             event_result="",
-            hidden_game_state=HiddenGameState()
+            hidden_game_state=HiddenGameState(
+                secret_relationships={},
+                long_term_plots={},
+                prophecies={}
+            )
         )
 
     def update(self, new_state: GameStateBase):
@@ -533,18 +532,18 @@ class GameStateManager:
             json.dump(self.game_history.history, f, cls=EnumEncoder)
 
         # Also write the story version
-        filename = filename.replace('.json', '_story.txt')
-        story = []
-        for state in self.game_history.history:
-            story.append(f"=== Turn {state.turn} ===")
-            story.append(f"Situation: {state.previous_situation}")
-            if state.chosen_action:
-                story.append(f"Taken action: {state.chosen_action.description}")
-            outcome = state.last_outcome
-            story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
+        #filename = filename.replace('.json', '_story.txt')
+        #story = []
+        #for state in self.game_history.history:
+        #    story.append(f"=== Turn {state.turn} ===")
+        #    story.append(f"Situation: {state.previous_situation}")
+        #    if state.chosen_action:
+        #        story.append(f"Taken action: {state.chosen_action.description}")
+        #    outcome = state.last_outcome
+        #    story.append(f"The result was: {outcome} and resulted in: {state.event_result}\n")
 
-        with open(filename, 'w') as f:
-            f.write("\n".join(story))
+        #with open(filename, 'w') as f:
+        #    f.write("\n".join(story))
 
     def load_game_state(self, filename: str):
         self.game_history = GameHistory()
@@ -674,33 +673,33 @@ ALL four fields are required for each tribe."""
             # Get development-specific instructions
             dev_instructions = {
                 "magical": """
-                    - Include one ritual or mystical option
-                    - Consider supernatural consequences
-                    - Add choices involving magical resources""",
+- Include one ritual or mystical option
+- Consider supernatural consequences
+- Add choices involving magical resources""",
                 "practical": """
-                    - Focus on infrastructure and resource management
-                    - Include diplomatic or trade options
-                    - Add choices about technological advancement""",
+- Focus on infrastructure and resource management
+- Include diplomatic or trade options
+- Add choices about technological advancement""",
                 "hybrid": """
-                    - Balance magical and practical approaches
-                    - Include choices that combine both aspects
-                    - Consider the interaction between magic and technology"""
+- Balance magical and practical approaches
+- Include choices that combine both aspects
+- Consider the interaction between magic and technology"""
             }
 
             # Get stance-specific instructions
             stance_instructions = {
                 "peaceful": """
-                    - Prioritize diplomatic solutions
-                    - Focus on defensive and growth options
-                    - Avoid direct confrontation choices""",
+- Prioritize diplomatic solutions
+- Focus on defensive and growth options
+- Avoid direct confrontation choices""",
                 "neutral": """
-                    - Balance aggressive and peaceful options
-                    - Include pragmatic choices
-                    - Add opportunities for strategic positioning""",
+- Balance aggressive and peaceful options
+- Include pragmatic choices
+- Add opportunities for strategic positioning""",
                 "aggressive": """
-                    - Include direct confrontation options
-                    - Focus on expansion or dominance
-                    - Add choices that challenge rivals"""
+- Include direct confrontation options
+- Focus on expansion or dominance
+- Add choices that challenge rivals"""
             }
 
             # Only add relevant instructions based on tribe's development and stance
@@ -739,7 +738,93 @@ ALL four fields are required for each tribe."""
         if self.current_game_state.turn > 3 and neutral_count < 2:
             tribes_prompt += "* Add one or two neutral factions if it fits the current situation\n"
 
-        # 4. Build action context
+            # 4. Build hidden information prompt based on current state
+        hidden_info_prompt = """
+6. Hidden Game State Updates (Note: All three components (relationships, plots, and prophecies) must be updated each turn.):
+           """
+
+        # Check secret relationships
+        current_relationships = self.current_game_state.hidden_game_state.secret_relationships
+        has_valid_relationships = (current_relationships and
+                                   isinstance(current_relationships, dict) and
+                                   any(current_relationships.values()))
+
+        if not has_valid_relationships:
+            self.current_game_state.hidden_game_state.secret_relationships = None  # Clear empty
+            hidden_info_prompt += """
+6.1 Secret Relationships:
+- Create 2-3 new secret relationships between characters
+- Include actual loyalties, hidden roles, and specific agendas
+               """
+        else:
+            hidden_info_prompt += f"""
+6.1 Secret Relationships:
+- Review and update existing relationships:
+{json.dumps(current_relationships, indent=2)}
+- Consider recent events' impact on loyalties and agendas
+- Add new relationships if warranted
+- Remove or modify outdated ones
+               """
+
+        # Check long-term plots
+        current_plots = self.current_game_state.hidden_game_state.long_term_plots
+        has_valid_plots = (current_plots and
+                           isinstance(current_plots, list) and
+                           any(plot for plot in current_plots if plot.get('title')))
+
+        if not has_valid_plots:
+            self.current_game_state.hidden_game_state.long_term_plots = None  # Clear empty
+            hidden_info_prompt += """
+6.2 Long-term Plots:
+Example format:
+[{
+    "title": "The Shadow Conspiracy",
+    "participants": ["Character1", "Character2"],
+    "description": "A plot to...",
+    "progress": "30%",
+    "potential_impact": "Could lead to..."
+}]
+"""
+        else:
+            hidden_info_prompt += f"""
+6.2 Long-term Plots:
+- Review and update existing plots:
+{json.dumps(current_plots, indent=2)}
+- Advance plot progress where appropriate
+- Update participants and potential impacts
+- Add new plots if needed
+               """
+
+        # Check prophecies
+        current_prophecies = self.current_game_state.hidden_game_state.prophecies
+        has_valid_prophecies = (current_prophecies and
+                                isinstance(current_prophecies, list) and
+                                any(prophecy for prophecy in current_prophecies if prophecy.get('text')))
+
+        if not has_valid_prophecies:
+            self.current_game_state.hidden_game_state.prophecies = None  # Clear empty
+            hidden_info_prompt += """
+6.3 Prophecies:
+- Create 1-2 new prophecies
+- Include prophecy text, current interpretation, and fulfillment status
+Example format:
+[{
+   "text": "When the three moons align, the ancient pact shall be tested",
+   "interpretation": "A crucial moment of choice between allies approaches",
+   "fulfillment_status": "early stages, first moon is beginning to align"
+}]
+               """
+        else:
+            hidden_info_prompt += f"""
+6.3 Prophecies:
+- Review and update existing prophecies:
+{json.dumps(current_prophecies, indent=2)}
+- Update fulfillment status based on recent events
+- Revise interpretations if needed
+- Add new prophecies if appropriate
+               """
+
+        # 5. Build action context
         action_context = (
             f"""Action: {self.current_game_state.chosen_action.caption}
 
@@ -752,7 +837,7 @@ ALL four fields are required for each tribe."""
         Treat the last action and the outcome as neutral, and tell something about their background."""
         )
 
-        # 5. Define choice types and get instructions
+        # 6. Define choice types and get instructions
         event_prompt = generate_game_prompt(
             event_type=choice_type,
             tier=self.current_game_state.tier,
@@ -760,7 +845,7 @@ ALL four fields are required for each tribe."""
             stance=self.current_game_state.tribe.stance
         )
 
-        # 6. Create messages with JSON structure first
+        # 7. Create the complete prompt
         messages = [
             {
                 "role": "system",
@@ -769,49 +854,40 @@ ALL four fields are required for each tribe."""
             {
                 "role": "user",
                 "content": f"""Current game state: 
-    {self.current_game_state.to_context_string(self.language)}
+{self.current_game_state.to_context_string(self.language)}
 
-    History: {self.current_game_state.short_history}
-    Previous: {self.current_game_state.previous_situation}
+History: {self.current_game_state.short_history}
+Previous: {self.current_game_state.previous_situation}
 
-    {action_context}
+{action_context}
 
-    Update the game state following these rules:
+Update the game state following these rules:
 
-    1. Tribe: Only change the tribe name and its stances after major events
+1. Tribe: Only change the tribe name and its stances after major events
 
-    2. Leaders (max 5):
-       - Update names, titles and relationships
-       - Add special roles if warranted
-       - Big changes only after important events
+2. Leaders (max 5):
+   - Update names, titles and relationships
+   - Add special roles if warranted
+   - Big changes only after important events
 
-    3. Foreign Tribes:
-       - For each tribe: status, name, description, development, stance, leaders (max 2)
-       - For each leader: Names, titles, relationships
-       - DiplomaticStatus changes require multiple turns
-       - Consider development/stance compatibility
-       {tribes_prompt}
+3. Foreign Tribes:
+   - For each tribe: status, name, description, development, stance, leaders (max 2)
+   - For each leader: Names, titles, relationships
+   - DiplomaticStatus changes require multiple turns
+   - Consider development/stance compatibility
+   {tribes_prompt}
 
-    4. Event Results:
-       - 2 paragraphs narrative based on the outcome
-       - Events may continue or conclude with closure
+4. Event Results:
+   - 2 paragraphs narrative based on the outcome
+   - Events may continue or conclude with closure
 
-    5. Situation:
-       - Current state summary based on outcome
-       - Add new developments as needed
-       
-   6. Hidden game state:
-       - Track potential future developments, secrets, and hidden relationships
-       - This information must be revealed through either:
-         a) Event Results: Weave revelations naturally into the narrative
-         b) Situation Updates: Include discoveries as new developments
-       - Rules for using hidden information:
-       - Cannot directly reference hidden information in choices
-       - Must first introduce/reveal information through narrative
-       - Revelations should feel natural and properly timed
-       - Can partially reveal information to build suspense
-    
-    7. New choices:
+5. Situation:
+   - Current state summary based on outcome
+   - Add new developments as needed
+
+{hidden_info_prompt}
+
+7. New choices:
 {event_prompt}
 
 {prob_adjustment}"""
@@ -821,12 +897,7 @@ ALL four fields are required for each tribe."""
 
         # Define a combined response class that includes both state and choices
         if combined_response := self.llm_context.make_story_call(messages, CombinedStateAndChoices, max_tokens=7000):
-            # Update game state using dict unpacking
-            #state_fields = {
-            #    field: getattr(combined_response, field)
-            #    for field in ['tribe', 'leaders', 'foreign_tribes', 'situation', 'event_result', 'hidden_game_state']
-            #}
-            #self.current_game_state.update(GameStateBase(**state_fields))
+            # Update state
             new_state = GameStateBase.model_validate(combined_response)
             self.current_game_state.update(new_state)
 
@@ -1068,12 +1139,12 @@ def create_gui():
                 )
                 story_model_dropdown = gr.Dropdown(
                     choices=["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-5-haiku-20241022"],
-                    value="claude-3-5-sonnet-20241022",
+                    value="claude-3-5-sonnet-20240620",
                     label="Story Model (Anthropic)",
                     visible=config.story_config.provider == LLMProvider.ANTHROPIC
                 )
                 story_model_openai_dropdown = gr.Dropdown(
-                    choices=["gpt-4o", "gpt-4o-mini"],
+                    choices=["gpt-4o", "gpt-4o-mini", "gpt-4o-2024-11-20", "o1-preview","o1-mini"] ,
                     value="gpt-4o",
                     label="Story Model (OpenAI)",
                     visible=config.story_config.provider == LLMProvider.OPENAI

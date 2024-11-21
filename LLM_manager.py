@@ -37,8 +37,7 @@ from Language import Language
 
 from openai import OpenAI
 import anthropic
-import instructor
-import google.generativeai as genai
+import json
 
 
 T = TypeVar('T')
@@ -240,12 +239,10 @@ class AnthropicStrategy(LLMStrategy):
 class GeminiStrategy(LLMStrategy):
     def __init__(self, model_config: ModelConfig, api_key: str):
         super().__init__(model_config, api_key)
-        genai.configure(api_key=api_key)  # alternative API key configuration
-        self.client = instructor.from_gemini(
-            client=genai.GenerativeModel(
-                model_name=self.model_config.model_name,  # model defaults to "gemini-pro"
-            ),
-            mode=instructor.Mode.GEMINI_JSON,
+        #genai.configure(api_key=api_key)  # alternative API key configuration
+        self.client = OpenAI(
+            api_key=os.environ["GEMINI_KEY"],
+            base_url="https://generativelanguage.googleapis.com/v1beta/"
         )
 
     def make_api_call(
@@ -265,10 +262,25 @@ class GeminiStrategy(LLMStrategy):
                 )
                 result = response.content[0].text
             else:
-                result = self.client.chat.completions.create(
+                tool_schema = create_json_schema(response_types)
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Tribe_Game",
+                            "description": "Create game structures",
+                            "parameters": tool_schema['json_schema']['schema']
+                        }
+                    }
+                ]
+                response = self.client.chat.completions.create(
+                    model=self.model_config.model_name,
                     messages=messages[1:],
-                    response_model=response_types,
+                    tools=tools,
+                    tool_choice={"type": "tool", "name": "Tribe_Game"}
                 )
+                result = response_types.model_validate(
+                    json.loads(response.choices[0].message.tool_calls[0].function.arguments))
 
             end_time = time.time()
             print(f"Time in Gemini ({self.model_config.model_name}): ", end_time - start_time)
@@ -276,7 +288,7 @@ class GeminiStrategy(LLMStrategy):
             return result
 
         except Exception as e:
-            raise RuntimeError(f"Anthropic API call failed: {str(e)}")
+            raise RuntimeError(f"Gemini API call failed: {str(e)}")
 
 
 class OpenAIStrategy(LLMStrategy):
